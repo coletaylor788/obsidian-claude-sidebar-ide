@@ -41,6 +41,15 @@ Then in Obsidian: Settings → Community Plugins → Refresh → Enable "Claude 
 3. Copy the downloaded files into that folder
 4. Reload Obsidian and enable the plugin in Settings → Community Plugins
 
+### BRAT (Auto-Updates)
+
+1. Install [BRAT](https://github.com/TfTHacker/obsidian42-brat) from Community Plugins
+2. In BRAT settings, click "Add Beta plugin"
+3. Enter: `derek-larson14/obsidian-claude-sidebar`
+4. Enable "Claude Sidebar" in Settings → Community Plugins
+
+BRAT handles updates automatically when new releases are published.
+
 ### From Community Plugins
 
 Once approved, you'll be able to search for "Claude Sidebar" in Community Plugins → Browse.
