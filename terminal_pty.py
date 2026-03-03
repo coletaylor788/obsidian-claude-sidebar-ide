@@ -66,9 +66,7 @@ def main():
     child_pid = pid  # Store for signal handler
 
     if pid == 0:
-        # Child process - create new process group so we can kill entire tree
-        os.setpgrp()
-        # exec the shell
+        # Child process - already in its own process group via pty.fork()/setsid()
         os.execvp(shell, shell_args)
         sys.exit(1)
 
