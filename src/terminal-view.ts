@@ -491,6 +491,15 @@ export class TerminalView extends ItemView {
         return false; // Block both keydown and keypress
       }
       if (ev.type === "keydown") {
+        // Cmd+C / Ctrl+C with selection: copy cleaned text (strip soft-wrap artifacts)
+        if ((ev.metaKey || ev.ctrlKey) && ev.key === "c" && this.term?.hasSelection()) {
+          const cleaned = this.getCleanSelection();
+          if (cleaned !== null) {
+            navigator.clipboard.writeText(cleaned);
+            this.term.clearSelection();
+            return false;
+          }
+        }
         // Cmd+Arrow: readline shortcuts for line navigation
         if (ev.metaKey) {
           if (ev.key === "ArrowRight") {
@@ -547,6 +556,61 @@ export class TerminalView extends ItemView {
       this.fit();
       this.fitTimeout = null;
     }, 100);
+  }
+
+  /** Get selected text with soft-wrap line breaks removed. */
+  private getCleanSelection(): string | null {
+    const sel = this.term?.getSelectionPosition();
+    if (!sel || !this.term) return null;
+    const buffer = this.term.buffer.active;
+    const cols = this.term.cols;
+
+    // Extract trimmed text for each selected buffer line
+    const lines: string[] = [];
+    for (let y = sel.start.y; y <= sel.end.y; y++) {
+      const line = buffer.getLine(y);
+      if (!line) { lines.push(""); continue; }
+
+      let text: string;
+      if (y === sel.start.y && y === sel.end.y) {
+        text = line.translateToString(true, sel.start.x, sel.end.x);
+      } else if (y === sel.start.y) {
+        text = line.translateToString(true, sel.start.x);
+      } else if (y === sel.end.y) {
+        text = line.translateToString(true, 0, sel.end.x);
+      } else {
+        text = line.translateToString(true);
+      }
+      lines.push(text);
+    }
+
+    if (lines.length === 0) return null;
+    if (lines.length === 1) return lines[0];
+
+    // Join lines, merging continuations from soft wraps or TUI-formatted wrapping
+    const result: string[] = [];
+    let current = lines[0];
+
+    for (let i = 0; i < lines.length - 1; i++) {
+      const nextBufLine = buffer.getLine(sel.start.y + i + 1);
+      const isSoftWrap = nextBufLine?.isWrapped === true;
+      // Heuristic: if trimmed content reaches near terminal width, it's likely a wrapped line
+      const isFull = lines[i].length >= cols - 2;
+
+      if (isSoftWrap || isFull) {
+        // Continuation — merge with next line, collapsing whitespace at the join
+        current = current.trimEnd() + " " + lines[i + 1].trimStart();
+      } else {
+        result.push(current);
+        current = lines[i + 1];
+      }
+    }
+    result.push(current);
+
+    // Strip Claude Code "⏺" bullet prefixes and leading indentation
+    return result
+      .map((line) => line.replace(/^⏺\s*/, "").replace(/^\s{1,2}/, ""))
+      .join("\n");
   }
 
   async waitForHostReady(): Promise<boolean> {
