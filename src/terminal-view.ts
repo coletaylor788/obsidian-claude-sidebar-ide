@@ -1,8 +1,6 @@
-import { ItemView, WorkspaceLeaf, Scope } from "obsidian";
+import { ItemView, WorkspaceLeaf, Scope, Platform } from "obsidian";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import * as path from "path";
-import * as fs from "fs";
 import type { IShellManager } from "./shell-interface";
 import { CLI_BACKENDS } from "./backends";
 import type VaultTerminalPlugin from "./main";
@@ -22,6 +20,7 @@ export class TerminalView extends ItemView {
   private escapeScope: Scope | null = null;
   private fitTimeout: ReturnType<typeof setTimeout> | null = null;
   private themeObserver: MutationObserver | null = null;
+  private copyHandler: ((e: ClipboardEvent) => void) | null = null;
   private imagePasteHandler: ((e: ClipboardEvent) => void) | null = null;
   private fileDragOverHandler: ((e: DragEvent) => void) | null = null;
   private fileDropHandler: ((e: DragEvent) => void) | null = null;
@@ -406,7 +405,10 @@ export class TerminalView extends ItemView {
   }
 
   async saveImageToTemp(blob: Blob): Promise<string> {
-    const os = require("os");
+    // Node.js only — caller must guard for desktop
+    const os = require("os") as { tmpdir(): string };
+    const path = require("path") as { join(...parts: string[]): string };
+    const fs = require("fs") as { writeFileSync(p: string, d: unknown): void };
     const ext = blob.type.split("/")[1] || "png";
     const filename = `claude_paste_${Date.now()}.${ext}`;
     const tempPath = path.join(os.tmpdir(), filename);
@@ -430,6 +432,31 @@ export class TerminalView extends ItemView {
     this.term.parser?.registerCsiHandler({ final: "I" }, () => true);
     this.term.parser?.registerCsiHandler({ final: "O" }, () => true);
 
+    // Intercept all copy events (including mobile long-press) to clean soft-wrapped text
+    this.copyHandler = (e: ClipboardEvent) => {
+      // Try xterm's selection first (works on desktop)
+      if (this.term?.hasSelection()) {
+        const cleaned = this.getCleanSelection();
+        if (cleaned !== null) {
+          e.preventDefault();
+          e.clipboardData?.setData("text/plain", cleaned);
+          this.term.clearSelection();
+          return;
+        }
+      }
+      // Fallback: clean native OS selection (mobile long-press copy)
+      const sel = window.getSelection();
+      if (sel && sel.toString() && this.containerEl.contains(sel.anchorNode)) {
+        const raw = sel.toString();
+        const cleaned = this.cleanNativeSelection(raw);
+        if (cleaned !== raw) {
+          e.preventDefault();
+          e.clipboardData?.setData("text/plain", cleaned);
+        }
+      }
+    };
+    document.addEventListener("copy", this.copyHandler as EventListener, true);
+
     // Handle image paste - use capture phase to intercept before xterm's textarea
     this.imagePasteHandler = async (e: ClipboardEvent) => {
       // Only handle if terminal has focus
@@ -437,7 +464,7 @@ export class TerminalView extends ItemView {
       const items = e.clipboardData?.items;
       if (!items) return;
       for (const item of items) {
-        if (item.type.startsWith("image/")) {
+        if (item.type.startsWith("image/") && Platform.isDesktopApp) {
           e.preventDefault();
           e.stopPropagation();
           const blob = item.getAsFile();
@@ -466,30 +493,34 @@ export class TerminalView extends ItemView {
     this.fileDropHandler = async (e: DragEvent) => {
       e.preventDefault();
       if (!this.shell.isRunning) return;
-      // Check for Obsidian internal file drag (obsidian:// URL)
-      const textData = e.dataTransfer?.getData("text/plain");
-      if (textData && textData.startsWith("obsidian://")) {
-        try {
-          const url = new URL(textData);
-          const filePath = url.searchParams.get("file");
-          if (filePath) {
-            const decodedPath = decodeURIComponent(filePath);
-            const absolutePath = (this.app.vault.adapter as unknown as { getFullPath(p: string): string }).getFullPath(decodedPath);
-            this.shell.write(`"${absolutePath}" `);
-            return;
+      // Check for Obsidian internal file drag (obsidian:// URL) — desktop only
+      if (Platform.isDesktopApp) {
+        const textData = e.dataTransfer?.getData("text/plain");
+        if (textData && textData.startsWith("obsidian://")) {
+          try {
+            const url = new URL(textData);
+            const filePath = url.searchParams.get("file");
+            if (filePath) {
+              const decodedPath = decodeURIComponent(filePath);
+              const absolutePath = (this.app.vault.adapter as unknown as { getFullPath(p: string): string }).getFullPath(decodedPath);
+              this.shell.write(`"${absolutePath}" `);
+              return;
+            }
+          } catch (err) {
+            console.error("Failed to parse obsidian URL:", err);
           }
-        } catch (err) {
-          console.error("Failed to parse obsidian URL:", err);
         }
       }
-      // Handle external file drops
-      const files = e.dataTransfer?.files;
-      if (files && files.length > 0) {
-        const { webUtils } = require("electron");
-        for (const file of files) {
-          const filePath = webUtils.getPathForFile(file);
-          if (filePath) {
-            this.shell.write(`"${filePath}" `);
+      // Handle external file drops (desktop only — requires Electron)
+      if (Platform.isDesktopApp) {
+        const files = e.dataTransfer?.files;
+        if (files && files.length > 0) {
+          const { webUtils } = require("electron");
+          for (const file of files) {
+            const filePath = webUtils.getPathForFile(file);
+            if (filePath) {
+              this.shell.write(`"${filePath}" `);
+            }
           }
         }
       }
@@ -616,8 +647,12 @@ export class TerminalView extends ItemView {
       const isFull = lines[i].length >= cols - 2;
 
       if (isSoftWrap || isFull) {
-        // Continuation — merge with next line, collapsing whitespace at the join
-        current = current.trimEnd() + " " + lines[i + 1].trimStart();
+        // Continuation — check if the row boundary had a space (word break vs mid-word wrap)
+        const rowLine = buffer.getLine(sel.start.y + i);
+        const lastCell = rowLine?.getCell(cols - 1);
+        const lastChar = lastCell?.getChars() || "";
+        const sep = lastChar === " " || lastChar === "" ? " " : "";
+        current = current.trimEnd() + sep + lines[i + 1].trimStart();
       } else {
         result.push(current);
         current = lines[i + 1];
@@ -629,6 +664,31 @@ export class TerminalView extends ItemView {
     return result
       .map((line) => line.replace(/^⏺\s*/, "").replace(/^\s{1,2}/, ""))
       .join("\n");
+  }
+
+  /** Clean native OS selection text (mobile fallback when xterm selection isn't available). */
+  private cleanNativeSelection(text: string): string {
+    const cols = this.term?.cols || 80;
+    const lines = text.split("\n");
+    if (lines.length <= 1) return text;
+
+    const result: string[] = [];
+    let current = lines[0];
+
+    for (let i = 0; i < lines.length - 1; i++) {
+      const trimmed = lines[i].trimEnd();
+      // If line fills near terminal width, it's likely a soft wrap
+      if (trimmed.length >= cols - 2 || lines[i].length >= cols) {
+        const endsWithSpace = lines[i].length >= cols && lines[i][cols - 1] === " ";
+        const sep = endsWithSpace ? " " : "";
+        current = current.trimEnd() + sep + lines[i + 1].trimStart();
+      } else {
+        result.push(current);
+        current = lines[i + 1];
+      }
+    }
+    result.push(current);
+    return result.join("\n");
   }
 
   async waitForHostReady(): Promise<boolean> {
@@ -666,12 +726,21 @@ export class TerminalView extends ItemView {
     // Persist last working directory for resume
     const defaultDir = this.plugin.pluginData.defaultWorkingDir;
     const vaultPath = this.plugin.getVaultPath();
-    const resolvedDefault = defaultDir ? path.resolve(vaultPath, defaultDir) : vaultPath;
+    let resolvedDefault = vaultPath;
+    if (defaultDir) {
+      try {
+        const path = require("path");
+        resolvedDefault = path.resolve(vaultPath, defaultDir);
+      } catch {
+        // Mobile — path module unavailable, use simple concatenation
+        resolvedDefault = vaultPath + "/" + defaultDir;
+      }
+    }
     const cwd = workingDir || resolvedDefault;
     this.plugin.pluginData.lastCwd = cwd;
     this.plugin.saveData(this.plugin.pluginData);
 
-    const isWindows = process.platform === "win32";
+    const isWindows = typeof process !== "undefined" && process.platform === "win32";
 
     this.shell.start(
       {
@@ -783,6 +852,10 @@ export class TerminalView extends ItemView {
     if (this.escapeScope) {
       this.app.keymap.popScope(this.escapeScope);
       this.escapeScope = null;
+    }
+    if (this.copyHandler) {
+      document.removeEventListener("copy", this.copyHandler as EventListener, true);
+      this.copyHandler = null;
     }
     if (this.imagePasteHandler) {
       document.removeEventListener("paste", this.imagePasteHandler as EventListener, true);

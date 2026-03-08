@@ -3,10 +3,10 @@ import { getToolCatalog, handleToolCall, ToolError } from "./ide-tools";
 import { DiffModal } from "./diff-modal";
 import type { SelectionParams } from "./types";
 import type { SpriteManager } from "./sprite-manager";
-import NodeWebSocket from "ws";
+import { createAuthWebSocket, WS_OPEN, type CompatWebSocket } from "./ws-compat";
 
 export class RemoteIdeClient {
-  private ws: NodeWebSocket | null = null;
+  private ws: CompatWebSocket | null = null;
   private lastSelection: SelectionParams | null = null;
   private selectionDebounceTimer: ReturnType<typeof setTimeout> | null = null;
   private pendingDiffPromises = new Map<number, (result: string) => void>();
@@ -18,31 +18,18 @@ export class RemoteIdeClient {
     private spriteManager: SpriteManager,
   ) {}
 
-  private backhaulToken: string | null = null;
-
-  async connect(spriteName: string, apiToken: string): Promise<void> {
-    const token = apiToken.replace(/\s/g, '');
-
+  async connect(): Promise<void> {
     // Wait for relay to start (launched as background process in terminal bash)
     console.log('[RemoteIDE] waiting for relay to start...');
     await new Promise(r => setTimeout(r, 2000));
 
-    // Read backhaul token from lock file for TCP auth
-    try {
-      const lockFile = new TextDecoder().decode(
-        await this.spriteManager.downloadFile('/home/sprite/.claude/ide/9502.lock')
-      );
-      console.log('[RemoteIDE] lock file found');
-      const lockData = JSON.parse(lockFile);
-      this.backhaulToken = lockData.backhaulToken || null;
-    } catch {
-      console.warn('[RemoteIDE] lock file not found — relay may not be running');
-    }
+    // Connect to terminal server's /ide endpoint which proxies to the IDE relay
+    const serverUrl = await this.spriteManager.getTerminalServerUrl();
+    const ticket = await this.spriteManager.getTerminalTicket();
+    const wsUrl = `${serverUrl.replace(/^http/, 'ws')}/ide`;
 
-    // Connect to relay's TCP backhaul via Sprites proxy on port 9503
-    const proxyUrl = `wss://api.sprites.dev/v1/sprites/${spriteName}/proxy?port=9503`;
-    await this.openProxyConnection(proxyUrl, token);
-    console.log('[RemoteIDE] connected to relay backhaul');
+    await this.openConnection(wsUrl, ticket);
+    console.log('[RemoteIDE] connected via terminal server /ide proxy');
 
     // After a delay, fetch relay log to check what happened
     setTimeout(async () => {
@@ -55,12 +42,10 @@ export class RemoteIdeClient {
     }, 5000);
   }
 
-  private openProxyConnection(url: string, token: string): Promise<void> {
+  private openConnection(url: string, ticket: string): Promise<void> {
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new NodeWebSocket(url, {
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        this.ws = createAuthWebSocket(url, ticket);
       } catch (err) {
         reject(err);
         return;
@@ -69,72 +54,46 @@ export class RemoteIdeClient {
       let resolved = false;
 
       this.ws.on('open', () => {
-        console.log('[RemoteIDE] proxy WebSocket connected');
-        // Auth handshake is sent after proxy tunnel establishes (in 'message' handler)
+        console.log('[RemoteIDE] WebSocket connected');
+        // Terminal server handles the TCP proxy + backhaul auth internally.
+        // Connection is ready to use immediately.
+        if (!resolved) {
+          resolved = true;
+          resolve();
+        }
       });
 
       this.ws.on('error', (err: Error) => {
-        console.error('[RemoteIDE] proxy error:', err.message);
+        console.error('[RemoteIDE] ws error:', err.message);
         if (!resolved) {
           resolved = true;
           reject(err);
         }
       });
 
-      this.ws.on('message', (data: NodeWebSocket.Data) => {
+      this.ws.on('message', (data: unknown) => {
         const text =
           typeof data === 'string'
             ? data
-            : Buffer.isBuffer(data)
-              ? data.toString('utf-8')
-              : new TextDecoder().decode(data as ArrayBuffer);
+            : new TextDecoder().decode(data as ArrayBuffer);
 
         console.debug('[RemoteIDE] ws message received, len:', text.length);
-
-        // The proxy sends {"status":"connected"} as the first message
-        if (!resolved) {
-          try {
-            const msg = JSON.parse(text);
-            if (msg.status === 'connected') {
-              console.log('[RemoteIDE] proxy tunnel established, sending auth...');
-              // Send backhaul auth handshake
-              if (this.backhaulToken) {
-                this.ws!.send(Buffer.from(
-                  JSON.stringify({ type: 'auth', token: this.backhaulToken }) + '\n',
-                  'utf-8'
-                ));
-              }
-              resolved = true;
-              resolve();
-              return;
-            }
-            if (msg.error) {
-              resolved = true;
-              reject(new Error(`Proxy error: ${msg.error}`));
-              return;
-            }
-          } catch {
-            // Not JSON — unexpected
-          }
-        }
-
-        // After connection, all data is line-delimited JSON from the relay
         this.handleProxyData(text);
       });
 
       this.ws.on('close', (code: number) => {
-        console.debug('[RemoteIDE] proxy WebSocket closed, code:', code);
+        console.debug('[RemoteIDE] WebSocket closed, code:', code);
         if (!resolved) {
           resolved = true;
-          reject(new Error('Proxy WebSocket closed before connecting'));
+          reject(new Error('WebSocket closed before connecting'));
         }
       });
 
-      // Timeout if proxy doesn't respond
+      // Timeout if connection doesn't establish
       setTimeout(() => {
         if (!resolved) {
           resolved = true;
-          reject(new Error('Proxy connection timeout'));
+          reject(new Error('Connection timeout'));
         }
       }, 10000);
     });
@@ -142,7 +101,7 @@ export class RemoteIdeClient {
 
   private handleProxyData(data: string): void {
     console.debug('[RemoteIDE] proxy data received, len:', data.length);
-    // Line-buffer incoming TCP data from the relay
+    // Line-buffer incoming data from the relay
     this.recvBuffer += data;
     const lines = this.recvBuffer.split('\n');
     this.recvBuffer = lines.pop() || '';
@@ -237,7 +196,7 @@ export class RemoteIdeClient {
 
   // Push selection changes to Claude Code via the relay
   pushSelection(): void {
-    if (!this.ws || this.ws.readyState !== NodeWebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WS_OPEN) return;
 
     if (this.selectionDebounceTimer) clearTimeout(this.selectionDebounceTimer);
     this.selectionDebounceTimer = setTimeout(() => {
@@ -285,9 +244,9 @@ export class RemoteIdeClient {
   }
 
   private sendToRelay(msg: string): void {
-    if (this.ws?.readyState === NodeWebSocket.OPEN) {
+    if (this.ws?.readyState === WS_OPEN) {
       console.debug('[RemoteIDE] sending to relay, len:', msg.length);
-      this.ws.send(Buffer.from(msg + '\n', 'utf-8'));
+      this.ws.send(msg + '\n');
     } else {
       console.warn('[RemoteIDE] sendToRelay: ws not open, state:', this.ws?.readyState);
     }

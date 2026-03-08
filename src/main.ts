@@ -1,16 +1,17 @@
-import { Plugin, WorkspaceLeaf, Menu, TFolder, Notice } from "obsidian";
+import { Plugin, WorkspaceLeaf, Menu, TFolder, Notice, Platform } from "obsidian";
 import { TerminalView, VIEW_TYPE } from "./terminal-view";
-import { IdeServer } from "./ide-server";
 import { ClaudeSidebarSettingsTab } from "./settings";
 import { CLI_BACKENDS } from "./backends";
-import { ShellManager } from "./shell-manager";
-import { RemoteShellManager } from "./remote-shell-manager";
 import { SpriteManager } from "./sprite-manager";
-import { VaultSync } from "./vault-sync";
-import { RemoteIdeClient } from "./remote-ide-client";
 import { SpritesSetupModal } from "./setup-modal";
 import type { IShellManager } from "./shell-interface";
 import type { PluginData, Backend } from "./types";
+
+// Type-only imports for modules that depend on Node.js built-ins.
+// Actual modules are lazy-loaded via require() to avoid crashing on mobile.
+import type { IdeServer } from "./ide-server";
+import type { VaultSync } from "./vault-sync";
+import type { RemoteIdeClient } from "./remote-ide-client";
 
 export default class VaultTerminalPlugin extends Plugin {
   pluginData: PluginData = {};
@@ -26,6 +27,17 @@ export default class VaultTerminalPlugin extends Plugin {
     this.lastActiveTerminalLeaf = null;
 
     this.registerView(VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
+
+    // On mobile, migrate any sidebar leaves to full-width tabs after layout restores
+    if (Platform.isMobile) {
+      this.app.workspace.onLayoutReady(() => {
+        const sidebarLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE)
+          .filter(l => l.getRoot() !== this.app.workspace.rootSplit);
+        for (const old of sidebarLeaves) {
+          old.detach();
+        }
+      });
+    }
 
     // Track the most recently focused Claude tab
     this.registerEvent(
@@ -193,35 +205,37 @@ export default class VaultTerminalPlugin extends Plugin {
       },
     });
 
-    // Register folder context menu
-    this.registerEvent(
-      this.app.workspace.on("file-menu", (menu, file) => {
-        // Only show for folders, not files
-        if (file instanceof TFolder) {
-          menu.addItem((item) =>
-            item
-              .setTitle("Open Claude here")
-              .setIcon("bot")
-              .onClick(() => {
-                const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
-                this.createNewTab(absolutePath);
-              })
-          );
-          const folderBackend = CLI_BACKENDS[this.pluginData.cliBackend || "claude"];
-          if (folderBackend.yoloFlag) {
+    // Register folder context menu (desktop only — requires filesystem adapter)
+    if (Platform.isDesktopApp) {
+      this.registerEvent(
+        this.app.workspace.on("file-menu", (menu, file) => {
+          // Only show for folders, not files
+          if (file instanceof TFolder) {
             menu.addItem((item) =>
               item
-                .setTitle("Open Claude here (YOLO)")
-                .setIcon("zap")
+                .setTitle("Open Claude here")
+                .setIcon("bot")
                 .onClick(() => {
                   const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
-                  this.createNewTab(absolutePath, true);
+                  this.createNewTab(absolutePath);
                 })
             );
+            const folderBackend = CLI_BACKENDS[this.pluginData.cliBackend || "claude"];
+            if (folderBackend.yoloFlag) {
+              menu.addItem((item) =>
+                item
+                  .setTitle("Open Claude here (YOLO)")
+                  .setIcon("zap")
+                  .onClick(() => {
+                    const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
+                    this.createNewTab(absolutePath, true);
+                  })
+              );
+            }
           }
-        }
-      })
-    );
+        })
+      );
+    }
 
     // Register editor context menu (right-click on selected text)
     this.registerEvent(
@@ -291,8 +305,9 @@ export default class VaultTerminalPlugin extends Plugin {
   }
 
   startIdeServer(): void {
-    this.ideServer = new IdeServer(this.app, () => this.getVaultPath());
-    this.ideServer.start();
+    const { IdeServer: IdeServerImpl } = require("./ide-server");
+    this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
+    this.ideServer!.start();
   }
 
   stopIdeServer(): void {
@@ -312,7 +327,11 @@ export default class VaultTerminalPlugin extends Plugin {
     } else {
       // Local mode — start IDE server, clear sprite manager
       this.spriteManager = null;
-      this.startIdeServer();
+      try {
+        this.startIdeServer();
+      } catch {
+        // Mobile — Node.js modules unavailable, IDE server not needed
+      }
     }
   }
 
@@ -325,22 +344,39 @@ export default class VaultTerminalPlugin extends Plugin {
     getIdePort: () => number | null,
   ): IShellManager {
     if (this.pluginData.runtimeMode === 'sprites' && this.spriteManager) {
+      const { RemoteShellManager } = require("./remote-shell-manager");
       return new RemoteShellManager(getBackend, pluginData, this.spriteManager);
     }
-    return new ShellManager(getBackend, pluginData, getVaultPath, getIdePort);
+    try {
+      const { ShellManager } = require("./shell-manager");
+      return new ShellManager(getBackend, pluginData, getVaultPath, getIdePort);
+    } catch {
+      // Mobile without Sprites — Node.js modules unavailable
+      return {
+        get isRunning() { return false; },
+        start(_opts: unknown, callbacks: { onStdout(s: string): void; onExit(c: number, s: null): void }) {
+          callbacks.onStdout('\r\nSprites mode is required on mobile.\r\nConfigure it in plugin settings.\r\n');
+          callbacks.onExit(1, null);
+        },
+        write() {},
+        resize() {},
+        stop() {},
+      };
+    }
   }
 
   async startRemoteSession(spriteName: string): Promise<void> {
     if (!this.pluginData.spritesApiToken || !this.spriteManager) return;
 
     // Start vault sync — upload files to a dedicated subdirectory on the sprite
-    this.vaultSync = new VaultSync(
+    const { VaultSync: VaultSyncImpl } = require("./vault-sync");
+    this.vaultSync = new VaultSyncImpl(
       this.app.vault,
       this.spriteManager,
       '/home/sprite/obsidian',
     );
     try {
-      await this.vaultSync.initialUpload();
+      await this.vaultSync!.initialUpload();
     } catch (err) {
       console.warn('VaultSync initial upload failed:', err);
     }
@@ -352,12 +388,13 @@ export default class VaultTerminalPlugin extends Plugin {
     await this.spriteManager.ensureClaudeInstalled();
 
     this.vaultSync.startWatchingVault();
-    this.vaultSync.startWatchingRemote(spriteName, this.pluginData.spritesApiToken);
+    this.vaultSync.startWatchingRemote();
 
     // Start remote IDE client
-    this.remoteIdeClient = new RemoteIdeClient(this.app, () => this.getVaultPath(), this.spriteManager);
+    const { RemoteIdeClient: RemoteIdeClientImpl } = require("./remote-ide-client");
+    this.remoteIdeClient = new RemoteIdeClientImpl(this.app, () => this.getVaultPath(), this.spriteManager);
     try {
-      await this.remoteIdeClient.connect(spriteName, this.pluginData.spritesApiToken);
+      await this.remoteIdeClient!.connect();
     } catch (err) {
       console.warn('RemoteIdeClient connection failed:', err);
     }
@@ -421,13 +458,26 @@ export default class VaultTerminalPlugin extends Plugin {
     yoloMode = false,
     continueSession = false
   ): Promise<void> {
-    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
-      .filter(l => l.getRoot() === this.app.workspace.rightSplit);
     let leaf: WorkspaceLeaf;
-    if (existing.length > 0) {
-      leaf = existing[0];
+    const isMobile = Platform.isMobile;
+    if (isMobile) {
+      // On mobile, open as a full-width tab in the main content area
+      // Detach any existing Claude leaves stuck in the sidebar
+      for (const old of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+        if (old.getRoot() !== this.app.workspace.rootSplit) {
+          old.detach();
+        }
+      }
+      // Reuse existing main-area leaf, or create one explicitly in rootSplit
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
+        .filter(l => l.getRoot() === this.app.workspace.rootSplit);
+      leaf = existing.length > 0
+        ? existing[0]
+        : this.app.workspace.createLeafInParent(this.app.workspace.rootSplit, 0);
     } else {
-      leaf = this.app.workspace.getRightLeaf(false)!;
+      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
+        .filter(l => l.getRoot() === this.app.workspace.rightSplit);
+      leaf = existing.length > 0 ? existing[0] : this.app.workspace.getRightLeaf(false)!;
     }
     if (leaf) {
       const state: Record<string, unknown> = {};

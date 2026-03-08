@@ -1,7 +1,10 @@
 import { requestUrl } from "obsidian";
+import { TERMINAL_SERVER_SCRIPT, PTY_HELPER_SCRIPT } from "./terminal-server";
 
 export class SpriteManager {
   currentSpriteName: string | null = null;
+  private cachedPublicUrl: string | null = null;
+  private cachedMasterSecret: string | null = null;
 
   constructor(
     private apiToken: string,
@@ -65,9 +68,20 @@ export class SpriteManager {
     // Check if claude is already installed
     try {
       const result = await this.exec(name, 'which claude');
-      if (result.trim()) return; // Already installed
+      if (result.trim()) {
+        // Claude installed — verify terminal server and node-pty are set up
+        try {
+          await this.exec(name, 'test -f /home/sprite/.ws-terminal/server.js && test -f /home/sprite/.ws-terminal/pty-helper.py');
+          return; // Both claude and terminal server are ready
+        } catch {
+          // Terminal server not set up — install it (upgrade path)
+          await this.setupTerminalServer(onProgress);
+          await this.checkpoint(name);
+          return;
+        }
+      }
     } catch {
-      // Not found — proceed with install
+      // Not found — proceed with full install
     }
 
     onProgress?.('Installing Claude Code on sprite...');
@@ -77,7 +91,10 @@ export class SpriteManager {
     await this.exec(name, 'mkdir -p /home/sprite/obsidian').catch(() => {});
     await this.exec(name, 'claude config set -g trustedDirectories /home/sprite/obsidian').catch(() => {});
 
-    onProgress?.('Claude Code installed. Creating checkpoint...');
+    onProgress?.('Claude Code installed. Setting up terminal server...');
+    await this.setupTerminalServer(onProgress);
+
+    onProgress?.('Creating checkpoint...');
     await this.checkpoint(name);
     onProgress?.('Sprite ready.');
   }
@@ -169,6 +186,95 @@ export class SpriteManager {
     } catch {
       return 'destroyed';
     }
+  }
+
+  async setupTerminalServer(onProgress?: (msg: string) => void): Promise<void> {
+    const name = this.currentSpriteName || this.spriteName;
+
+    // Install node-pty locally so the terminal server script can require() it
+    onProgress?.('Installing node-pty...');
+    await this.exec(name, 'mkdir -p /home/sprite/.ws-terminal && cd /home/sprite/.ws-terminal && npm install node-pty').catch(() => {
+      console.warn('[SpriteManager] node-pty install failed — PTY may not work');
+    });
+
+    // Upload the terminal server script and Python PTY helper
+    onProgress?.('Uploading terminal server...');
+    await this.uploadFile('/home/sprite/.ws-terminal/server.js', TERMINAL_SERVER_SCRIPT);
+    await this.uploadFile('/home/sprite/.ws-terminal/pty-helper.py', PTY_HELPER_SCRIPT);
+
+    // Set sprite URL to public (no auth headers required for HTTP/WS access)
+    await requestUrl({
+      url: `https://api.sprites.dev/v1/sprites/${name}`,
+      method: 'PUT',
+      headers: this.headers,
+      body: JSON.stringify({ url_settings: { auth: 'public' } }),
+    });
+
+    // Register as a Sprites service (auto-restarts on wake)
+    await requestUrl({
+      url: `https://api.sprites.dev/v1/sprites/${name}/services/terminal`,
+      method: 'PUT',
+      headers: this.headers,
+      body: JSON.stringify({
+        cmd: 'node',
+        args: ['/home/sprite/.ws-terminal/server.js'],
+        http_port: 8080,
+      }),
+    });
+
+    onProgress?.('Terminal server registered.');
+  }
+
+  async getTerminalServerUrl(): Promise<string> {
+    if (this.cachedPublicUrl) return this.cachedPublicUrl;
+
+    const name = this.currentSpriteName || this.spriteName;
+    const res = await requestUrl({
+      url: `https://api.sprites.dev/v1/sprites/${name}`,
+      headers: this.headers,
+    });
+    const data = res.json;
+    // Extract public URL from sprite info — try common fields
+    const url = data.url || data.public_url || `https://${name}.sprites.dev`;
+    this.cachedPublicUrl = url;
+    return url;
+  }
+
+  async getTerminalTicket(): Promise<string> {
+    // Read master secret — retry to allow the terminal server service to start
+    if (!this.cachedMasterSecret) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          const secretData = await this.downloadFile('/home/sprite/.ws-terminal/master-secret');
+          this.cachedMasterSecret = new TextDecoder().decode(secretData).trim();
+          break;
+        } catch {
+          if (attempt === 9) throw new Error('Terminal server not ready — master secret not found');
+          await new Promise(r => setTimeout(r, 1000));
+        }
+      }
+    }
+
+    // Request a one-time ticket from the terminal server
+    const serverUrl = await this.getTerminalServerUrl();
+    const res = await requestUrl({
+      url: `${serverUrl}/api/ticket`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ secret: this.cachedMasterSecret }),
+    });
+    return res.json.ticket;
+  }
+
+  /** @deprecated Use getTerminalTicket() instead */
+  async getWsTicket(): Promise<string> {
+    return this.getTerminalTicket();
+  }
+
+  /** Clear cached values (e.g., after sprite restart) */
+  clearCache(): void {
+    this.cachedPublicUrl = null;
+    this.cachedMasterSecret = null;
   }
 
   private simpleHash(str: string): number {

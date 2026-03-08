@@ -1,12 +1,11 @@
-import { requestUrl } from "obsidian";
 import type { ShellOptions, ShellCallbacks, IShellManager } from "./shell-interface";
 import type { Backend, PluginData } from "./types";
 import type { SpriteManager } from "./sprite-manager";
 import { IDE_RELAY_SCRIPT } from "./ide-relay";
-import NodeWebSocket from "ws";
+import { createAuthWebSocket, WS_OPEN, type CompatWebSocket } from "./ws-compat";
 
 export class RemoteShellManager implements IShellManager {
-  private ws: NodeWebSocket | null = null;
+  private ws: CompatWebSocket | null = null;
   private callbacks: ShellCallbacks | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -83,12 +82,13 @@ export class RemoteShellManager implements IShellManager {
     opts: ShellOptions,
     callbacks: ShellCallbacks
   ): Promise<void> {
-    const spriteName = await this.spriteManager.ensureSprite();
-    const token = this.pluginData.spritesApiToken?.replace(/\s/g, '');
-    if (!token) throw new Error('Sprites API token not configured');
+    await this.spriteManager.ensureSprite();
+
+    // Ensure Claude Code and terminal server are installed on the Sprite.
+    // This is the primary setup path — idempotent (fast no-op if already done).
+    await this.spriteManager.ensureClaudeInstalled();
 
     // Upload IDE relay script before starting the terminal session
-    // (exec POST doesn't work on Sprites, so relay must start via the terminal bash)
     try {
       await this.spriteManager.uploadFile('/home/sprite/ide-relay.js', IDE_RELAY_SCRIPT);
       console.log('[RemoteShell] IDE relay script uploaded');
@@ -102,42 +102,42 @@ export class RemoteShellManager implements IShellManager {
     this.lastCols = cols;
     this.lastRows = rows;
 
-    // Connect with bash first — Sprites API ignores cols/rows query params,
-    // so we resize after connect, then write the actual command to stdin
-    const wsUrl =
-      `wss://api.sprites.dev/v1/sprites/${spriteName}/exec` +
-      `?cmd=${encodeURIComponent('bash')}&tty=true&cols=${cols}&rows=${rows}`;
-
-    console.log('[RemoteShell] sprite:', spriteName, 'cols:', cols, 'rows:', rows);
+    console.log('[RemoteShell] cols:', cols, 'rows:', rows);
     console.log('[RemoteShell] cmd:', cmd);
 
-    await this.openWebSocket(wsUrl, token, callbacks);
+    await this.openWebSocket(callbacks);
 
-    // Resize terminal to correct dimensions
-    this.resize(cols, rows);
-
-    // Give resize a moment to take effect, then send the actual command.
+    // Give connection a moment to stabilize, then send the actual command.
     // Start the IDE relay as a background process first, then run the main command.
     // The relay needs ~1s to start listening before Claude Code can discover it.
     await new Promise(r => setTimeout(r, 300));
     this.write(
-      'pkill -f "node /home/sprite/ide-relay.js" 2>/dev/null; ' +
+      '{ pkill -f "node /home/sprite/ide-relay.js" 2>/dev/null; ' +
       'node /home/sprite/ide-relay.js > /tmp/relay.log 2>&1 & ' +
-      'sleep 1; ' +
-      cmd + '\n'
+      'sleep 1; } 2>/dev/null\n'
     );
+    // Wait for relay to start, then clear the screen and run the user-facing command
+    setTimeout(() => {
+      this.write('clear\n');
+      setTimeout(() => this.write(cmd + '\n'), 100);
+    }, 1200);
   }
 
-  private openWebSocket(
-    url: string,
-    token: string,
+  private async openWebSocket(
     callbacks: ShellCallbacks
   ): Promise<void> {
+    // Get fresh ticket and URL for each connection attempt
+    const serverUrl = await this.spriteManager.getTerminalServerUrl();
+    const ticket = await this.spriteManager.getTerminalTicket();
+
+    // Connect to custom terminal server on the sprite
+    const wsUrl = `${serverUrl.replace(/^http/, 'ws')}/ws?cols=${this.lastCols}&rows=${this.lastRows}`;
+
+    console.log('[RemoteShell] connecting to:', wsUrl);
+
     return new Promise((resolve, reject) => {
       try {
-        this.ws = new NodeWebSocket(url, {
-          headers: { 'Authorization': `Bearer ${token}` },
-        });
+        this.ws = createAuthWebSocket(wsUrl, ticket);
       } catch (err) {
         reject(err);
         return;
@@ -150,18 +150,21 @@ export class RemoteShellManager implements IShellManager {
         this.reconnectAttempts = 0;
         cleanup();
         if (wasReconnecting) {
-          const wasSilent = priorAttempts <= RemoteShellManager.SILENT_RETRIES;
+          // Send resize to sync terminal dimensions
           this.resize(this.lastCols, this.lastRows);
           if (this.lastCmd) {
             setTimeout(() => {
-              // Exec WS drop kills the bash session — always restart relay + Claude
+              // WS drop kills the bash session — always restart relay + Claude
               console.log(`[RemoteShell] reconnect succeeded (attempt ${priorAttempts})`);
               this.write(
-                'pkill -f "node /home/sprite/ide-relay.js" 2>/dev/null; ' +
+                '{ pkill -f "node /home/sprite/ide-relay.js" 2>/dev/null; ' +
                 'node /home/sprite/ide-relay.js > /tmp/relay.log 2>&1 & ' +
-                'sleep 1; ' +
-                this.lastCmd + '\n'
+                'sleep 1; } 2>/dev/null\n'
               );
+              setTimeout(() => {
+                this.write('clear\n');
+                setTimeout(() => this.write(this.lastCmd + '\n'), 100);
+              }, 1200);
               callbacks.onReconnected?.();
             }, 300);
           } else {
@@ -184,14 +187,12 @@ export class RemoteShellManager implements IShellManager {
       this.ws.on('open', onOpen);
       this.ws.on('error', onError);
 
-      // Wire up persistent handlers — Sprites API sends JSON-framed messages
-      this.ws.on('message', (data: NodeWebSocket.Data) => {
+      // Wire up persistent handlers — terminal server sends JSON-framed messages
+      this.ws.on('message', (data: unknown) => {
         const text =
           typeof data === 'string'
             ? data
-            : Buffer.isBuffer(data)
-              ? data.toString('utf-8')
-              : new TextDecoder().decode(data as ArrayBuffer);
+            : new TextDecoder().decode(data as ArrayBuffer);
 
         // Try to parse as JSON control message
         try {
@@ -209,7 +210,7 @@ export class RemoteShellManager implements IShellManager {
             }
             return;
           }
-          // All other JSON control messages (session_info, port_opened, etc.) — ignore
+          // All other JSON control messages — ignore
           return;
         } catch {
           // Not JSON — treat as raw terminal output
@@ -217,13 +218,13 @@ export class RemoteShellManager implements IShellManager {
         callbacks.onStdout(text);
       });
 
-      this.ws.on('close', (code: number, reason: Buffer) => {
-        const reasonStr = reason?.toString('utf-8') || '';
+      this.ws.on('close', (code: number, reason: unknown) => {
+        const reasonStr = String(reason || '');
         console.log(`[RemoteShell] ws close: code=${code} reason="${reasonStr}" isRunning=${this._isRunning} exitHandled=${this._exitHandled}`);
         if (this._isRunning) {
           // Unexpected disconnect — try reconnect
           this._isRunning = false;
-          this.attemptReconnect(url, token, callbacks);
+          this.attemptReconnect(callbacks);
         } else if (!this._exitHandled) {
           this._exitHandled = true;
           callbacks.onExit(code === 1000 ? 0 : code, null);
@@ -237,26 +238,18 @@ export class RemoteShellManager implements IShellManager {
   }
 
   write(data: string): void {
-    if (this.ws?.readyState === NodeWebSocket.OPEN) {
-      this.ws.send(Buffer.from(data, 'utf-8'));
+    if (this.ws?.readyState === WS_OPEN) {
+      this.ws.send(data);
     }
   }
 
   resize(cols: number, rows: number): void {
-    const spriteName = this.spriteManager.currentSpriteName;
-    const token = this.pluginData.spritesApiToken?.replace(/\s/g, '');
-    if (!spriteName || !token) return;
-
-    // Best-effort resize via REST API (use requestUrl to bypass CORS)
-    requestUrl({
-      url: `https://api.sprites.dev/v1/sprites/${spriteName}/exec/resize`,
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ rows, cols }),
-    }).catch(() => {});
+    this.lastCols = cols;
+    this.lastRows = rows;
+    // Send resize as a control message over the WebSocket
+    if (this.ws?.readyState === WS_OPEN) {
+      this.ws.send(JSON.stringify({ __ctrl: 'resize', cols, rows }));
+    }
   }
 
   stop(): void {
@@ -274,8 +267,6 @@ export class RemoteShellManager implements IShellManager {
   }
 
   private attemptReconnect(
-    url: string,
-    token: string,
     callbacks: ShellCallbacks
   ): void {
     if (this.reconnectAttempts >= RemoteShellManager.MAX_RECONNECT_ATTEMPTS) {
@@ -298,9 +289,9 @@ export class RemoteShellManager implements IShellManager {
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
       this._isRunning = true; // Optimistically set so onclose triggers reconnect
-      this.openWebSocket(url, token, callbacks).catch(() => {
+      this.openWebSocket(callbacks).catch(() => {
         this._isRunning = false;
-        this.attemptReconnect(url, token, callbacks);
+        this.attemptReconnect(callbacks);
       });
     }, delay);
   }

@@ -1,12 +1,12 @@
 import { Vault, TFile, TAbstractFile } from "obsidian";
 import type { SpriteManager } from "./sprite-manager";
-import NodeWebSocket from "ws";
+import { createAuthWebSocket, type CompatWebSocket } from "./ws-compat";
 
 export class VaultSync {
   private pushDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private pullDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private inFlightPushes = new Map<string, number>(); // path → push timestamp
-  private watchWs: NodeWebSocket | null = null;
+  private watchWs: CompatWebSocket | null = null;
   private reconnectAttempts = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private vaultEventRefs: Array<() => void> = [];
@@ -135,20 +135,19 @@ export class VaultSync {
 
   // --- Live: Sprite → Obsidian (WebSocket watch) ---
 
-  startWatchingRemote(spriteName: string, apiToken: string): void {
-    const token = apiToken.replace(/\s/g, '');
-    this.connectWatch(spriteName, token);
+  startWatchingRemote(): void {
+    this.connectWatch();
   }
 
-  private connectWatch(spriteName: string, token: string): void {
+  private async connectWatch(): Promise<void> {
     if (this.stopped) return;
 
-    const wsUrl = `wss://api.sprites.dev/v1/sprites/${spriteName}/fs/watch`;
-
     try {
-      this.watchWs = new NodeWebSocket(wsUrl, {
-        headers: { 'Authorization': `Bearer ${token}` },
-      });
+      const serverUrl = await this.spriteManager.getTerminalServerUrl();
+      const ticket = await this.spriteManager.getTerminalTicket();
+      const wsUrl = `${serverUrl.replace(/^http/, 'ws')}/watch?path=${encodeURIComponent(this.remoteWorkDir)}`;
+
+      this.watchWs = createAuthWebSocket(wsUrl, ticket);
     } catch (err) {
       console.warn('VaultSync: failed to create watch WebSocket:', err);
       return;
@@ -166,13 +165,11 @@ export class VaultSync {
       }));
     });
 
-    this.watchWs.on('message', (data: NodeWebSocket.Data) => {
+    this.watchWs.on('message', (data: unknown) => {
       const text =
         typeof data === 'string'
           ? data
-          : Buffer.isBuffer(data)
-            ? data.toString('utf-8')
-            : new TextDecoder().decode(data as ArrayBuffer);
+          : new TextDecoder().decode(data as ArrayBuffer);
 
       try {
         const msg = JSON.parse(text);
@@ -185,7 +182,7 @@ export class VaultSync {
 
     this.watchWs.on('close', () => {
       if (!this.stopped) {
-        this.attemptReconnect(spriteName, token);
+        this.attemptReconnect();
       }
     });
 
@@ -283,7 +280,7 @@ export class VaultSync {
     }
   }
 
-  private attemptReconnect(spriteName: string, token: string): void {
+  private attemptReconnect(): void {
     if (this.reconnectAttempts >= VaultSync.MAX_RECONNECT_ATTEMPTS) {
       console.warn('VaultSync: watch reconnect failed after max attempts');
       return;
@@ -298,7 +295,7 @@ export class VaultSync {
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connectWatch(spriteName, token);
+      this.connectWatch();
     }, delay);
   }
 
