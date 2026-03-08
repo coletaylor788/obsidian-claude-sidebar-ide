@@ -1,13 +1,23 @@
-import { Plugin, WorkspaceLeaf, Menu, TFolder } from "obsidian";
+import { Plugin, WorkspaceLeaf, Menu, TFolder, Notice } from "obsidian";
 import { TerminalView, VIEW_TYPE } from "./terminal-view";
 import { IdeServer } from "./ide-server";
 import { ClaudeSidebarSettingsTab } from "./settings";
 import { CLI_BACKENDS } from "./backends";
-import type { PluginData } from "./types";
+import { ShellManager } from "./shell-manager";
+import { RemoteShellManager } from "./remote-shell-manager";
+import { SpriteManager } from "./sprite-manager";
+import { VaultSync } from "./vault-sync";
+import { RemoteIdeClient } from "./remote-ide-client";
+import { SpritesSetupModal } from "./setup-modal";
+import type { IShellManager } from "./shell-interface";
+import type { PluginData, Backend } from "./types";
 
 export default class VaultTerminalPlugin extends Plugin {
   pluginData: PluginData = {};
   ideServer: IdeServer | null = null;
+  spriteManager: SpriteManager | null = null;
+  vaultSync: VaultSync | null = null;
+  remoteIdeClient: RemoteIdeClient | null = null;
   private lastActiveTerminalLeaf: WorkspaceLeaf | null = null;
   private lastRibbonClick = 0;
 
@@ -234,6 +244,7 @@ export default class VaultTerminalPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         this.ideServer?.pushSelection();
+        this.remoteIdeClient?.pushSelection();
       })
     );
 
@@ -241,21 +252,27 @@ export default class VaultTerminalPlugin extends Plugin {
     this.registerEvent(
       this.app.workspace.on("editor-change", () => {
         this.ideServer?.pushSelection();
+        this.remoteIdeClient?.pushSelection();
       })
     );
 
     // Capture selection changes (cursor moves, text highlights) via DOM event
-    const selHandler = () => this.ideServer?.pushSelection();
+    const selHandler = () => {
+      this.ideServer?.pushSelection();
+      this.remoteIdeClient?.pushSelection();
+    };
     document.addEventListener("selectionchange", selHandler);
     this.register(() => document.removeEventListener("selectionchange", selHandler));
 
-    // Start IDE integration WebSocket server
-    this.startIdeServer();
+    // Initialize runtime infrastructure based on mode
+    this.updateRuntimeMode();
 
     this.addSettingTab(new ClaudeSidebarSettingsTab(this.app, this));
   }
 
   onunload() {
+    // Stop remote services
+    this.stopRemoteSession();
     // Stop IDE integration server
     this.stopIdeServer();
     // Kill all terminal processes before unloading to prevent orphans
@@ -274,7 +291,6 @@ export default class VaultTerminalPlugin extends Plugin {
   }
 
   startIdeServer(): void {
-    if (this.pluginData.enableIdeIntegration === false) return;
     this.ideServer = new IdeServer(this.app, () => this.getVaultPath());
     this.ideServer.start();
   }
@@ -282,6 +298,88 @@ export default class VaultTerminalPlugin extends Plugin {
   stopIdeServer(): void {
     this.ideServer?.stop();
     this.ideServer = null;
+  }
+
+  /** (Re-)initialize runtime infrastructure when mode or token changes. */
+  updateRuntimeMode(): void {
+    if (this.pluginData.runtimeMode === 'sprites' && this.pluginData.spritesApiToken) {
+      // Sprites mode — create SpriteManager, stop local IDE server
+      this.stopIdeServer();
+      this.spriteManager = new SpriteManager(
+        this.pluginData.spritesApiToken,
+        this.app.vault.getName(),
+      );
+    } else {
+      // Local mode — start IDE server, clear sprite manager
+      this.spriteManager = null;
+      this.startIdeServer();
+    }
+  }
+
+  // --- Remote Shell Support ---
+
+  createShellManager(
+    getBackend: () => Backend,
+    pluginData: PluginData,
+    getVaultPath: () => string,
+    getIdePort: () => number | null,
+  ): IShellManager {
+    if (this.pluginData.runtimeMode === 'sprites' && this.spriteManager) {
+      return new RemoteShellManager(getBackend, pluginData, this.spriteManager);
+    }
+    return new ShellManager(getBackend, pluginData, getVaultPath, getIdePort);
+  }
+
+  async startRemoteSession(spriteName: string): Promise<void> {
+    if (!this.pluginData.spritesApiToken || !this.spriteManager) return;
+
+    // Start vault sync — upload files to a dedicated subdirectory on the sprite
+    this.vaultSync = new VaultSync(
+      this.app.vault,
+      this.spriteManager,
+      '/home/sprite/obsidian',
+    );
+    try {
+      await this.vaultSync.initialUpload();
+    } catch (err) {
+      console.warn('VaultSync initial upload failed:', err);
+    }
+    // Guard against race: stopRemoteSession() may have nulled vaultSync during await
+    if (!this.vaultSync) return;
+
+    // Ensure Claude Code is installed before starting the watch WebSocket,
+    // since ensureClaudeInstalled may checkpoint/restart the sprite
+    await this.spriteManager.ensureClaudeInstalled();
+
+    this.vaultSync.startWatchingVault();
+    this.vaultSync.startWatchingRemote(spriteName, this.pluginData.spritesApiToken);
+
+    // Start remote IDE client
+    this.remoteIdeClient = new RemoteIdeClient(this.app, () => this.getVaultPath(), this.spriteManager);
+    try {
+      await this.remoteIdeClient.connect(spriteName, this.pluginData.spritesApiToken);
+    } catch (err) {
+      console.warn('RemoteIdeClient connection failed:', err);
+    }
+  }
+
+  stopRemoteSession(): void {
+    this.vaultSync?.stop();
+    this.vaultSync = null;
+    this.remoteIdeClient?.disconnect();
+    this.remoteIdeClient = null;
+  }
+
+  async destroySprite(): Promise<void> {
+    this.stopRemoteSession();
+    if (this.spriteManager) {
+      try {
+        await this.spriteManager.destroy();
+        new Notice('Sprite destroyed.');
+      } catch (err) {
+        new Notice(`Failed to destroy Sprite: ${(err as Error).message}`);
+      }
+    }
   }
 
   private async toggleFocus(): Promise<void> {
@@ -323,7 +421,14 @@ export default class VaultTerminalPlugin extends Plugin {
     yoloMode = false,
     continueSession = false
   ): Promise<void> {
-    const leaf = this.app.workspace.getRightLeaf(false);
+    const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
+      .filter(l => l.getRoot() === this.app.workspace.rightSplit);
+    let leaf: WorkspaceLeaf;
+    if (existing.length > 0) {
+      leaf = existing[0];
+    } else {
+      leaf = this.app.workspace.getRightLeaf(false)!;
+    }
     if (leaf) {
       const state: Record<string, unknown> = {};
       if (workingDir) state.workingDir = workingDir;
@@ -366,7 +471,7 @@ export default class VaultTerminalPlugin extends Plugin {
     if (needsNewTab) {
       // Wait for process to start
       let attempts = 0;
-      while ((!view.proc || !view.hasOutput) && attempts < 100) {
+      while ((!view.isShellRunning || !view.hasOutput) && attempts < 100) {
         await new Promise((r) => setTimeout(r, 50));
         attempts++;
       }
@@ -374,9 +479,9 @@ export default class VaultTerminalPlugin extends Plugin {
       await new Promise((r) => setTimeout(r, 1000));
     }
 
-    if (!view.proc || view.proc.killed) return false;
+    if (!view.isShellRunning) return false;
 
-    view.proc.stdin?.write(text);
+    view.writeToShell(text);
 
     this.app.workspace.setActiveLeaf(leaf, { focus: true });
     if (view.term) {

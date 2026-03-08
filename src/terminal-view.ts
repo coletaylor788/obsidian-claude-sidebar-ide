@@ -1,10 +1,9 @@
 import { ItemView, WorkspaceLeaf, Scope } from "obsidian";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { ChildProcess } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
-import { ShellManager } from "./shell-manager";
+import type { IShellManager } from "./shell-interface";
 import { CLI_BACKENDS } from "./backends";
 import type VaultTerminalPlugin from "./main";
 
@@ -13,12 +12,11 @@ export const VIEW_TYPE = "vault-terminal";
 export class TerminalView extends ItemView {
   term: Terminal | null = null;
   fitAddon: FitAddon | null = null;
-  proc: ChildProcess | null = null;
   hasOutput = false;
 
   plugin: VaultTerminalPlugin;
 
-  private shell: ShellManager;
+  private shell: IShellManager;
   private resizeObserver: ResizeObserver | null = null;
   private termHost: HTMLElement | null = null;
   private escapeScope: Scope | null = null;
@@ -34,7 +32,7 @@ export class TerminalView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: VaultTerminalPlugin) {
     super(leaf);
     this.plugin = plugin;
-    this.shell = new ShellManager(
+    this.shell = plugin.createShellManager(
       () => this.getBackend(),
       this.plugin.pluginData,
       () => this.plugin.getVaultPath(),
@@ -71,7 +69,7 @@ export class TerminalView extends ItemView {
       this.continueSession = state.continueSession as boolean;
     }
     // If shell already started, restart with new settings
-    if (this.proc && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
+    if (this.shell.isRunning && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
       this.startShell(this.workingDir, this.yoloMode, this.continueSession);
     }
   }
@@ -90,7 +88,7 @@ export class TerminalView extends ItemView {
     this.initTerminal();
     // Delay shell start slightly to allow setState() to be called first
     setTimeout(() => {
-      if (!this.proc) {
+      if (!this.shell.isRunning) {
         this.startShell(this.workingDir, this.yoloMode, this.continueSession);
       }
     }, 10);
@@ -104,8 +102,8 @@ export class TerminalView extends ItemView {
     this.escapeScope.register([], "Escape", () => {
       // Only intercept when terminal has focus
       if (this.containerEl.contains(document.activeElement)) {
-        if (this.proc && !this.proc.killed) {
-          this.proc.stdin?.write("\x1b");
+        if (this.shell.isRunning) {
+          this.shell.write("\x1b");
         }
         return false; // Block further handling by Obsidian
       }
@@ -345,6 +343,7 @@ export class TerminalView extends ItemView {
   }
 
   private loadingEl: HTMLElement | null = null;
+  private reconnectEl: HTMLElement | null = null;
   private outputBytes = 0;
 
   buildUI(): void {
@@ -362,6 +361,25 @@ export class TerminalView extends ItemView {
       setTimeout(() => {
         this.loadingEl?.remove();
         this.loadingEl = null;
+      }, 300);
+    }
+  }
+
+  showReconnecting(): void {
+    if (!this.reconnectEl) {
+      this.reconnectEl = this.containerEl.createDiv({ cls: "vault-terminal-reconnecting" });
+      this.reconnectEl.innerHTML =
+        `<div class="vault-terminal-spinner"></div>` +
+        `<div>Reconnecting...</div>`;
+    }
+  }
+
+  hideReconnecting(): void {
+    if (this.reconnectEl) {
+      this.reconnectEl.classList.add("vault-terminal-loading-fade");
+      setTimeout(() => {
+        this.reconnectEl?.remove();
+        this.reconnectEl = null;
       }, 300);
     }
   }
@@ -427,8 +445,8 @@ export class TerminalView extends ItemView {
             try {
               const imagePath = await this.saveImageToTemp(blob);
               // Insert the path into the terminal input (quoted for paths with spaces)
-              if (this.proc && !this.proc.killed) {
-                this.proc.stdin?.write(`"${imagePath}" `);
+              if (this.shell.isRunning) {
+                this.shell.write(`"${imagePath}" `);
               }
             } catch (err: unknown) {
               this.term?.writeln(`\r\n[Image paste error: ${(err as Error).message}]`);
@@ -447,7 +465,7 @@ export class TerminalView extends ItemView {
     };
     this.fileDropHandler = async (e: DragEvent) => {
       e.preventDefault();
-      if (!this.proc || this.proc.killed) return;
+      if (!this.shell.isRunning) return;
       // Check for Obsidian internal file drag (obsidian:// URL)
       const textData = e.dataTransfer?.getData("text/plain");
       if (textData && textData.startsWith("obsidian://")) {
@@ -457,7 +475,7 @@ export class TerminalView extends ItemView {
           if (filePath) {
             const decodedPath = decodeURIComponent(filePath);
             const absolutePath = (this.app.vault.adapter as unknown as { getFullPath(p: string): string }).getFullPath(decodedPath);
-            this.proc.stdin?.write(`"${absolutePath}" `);
+            this.shell.write(`"${absolutePath}" `);
             return;
           }
         } catch (err) {
@@ -471,7 +489,7 @@ export class TerminalView extends ItemView {
         for (const file of files) {
           const filePath = webUtils.getPathForFile(file);
           if (filePath) {
-            this.proc.stdin?.write(`"${filePath}" `);
+            this.shell.write(`"${filePath}" `);
           }
         }
       }
@@ -484,8 +502,8 @@ export class TerminalView extends ItemView {
       // Must block both keydown and keypress events to prevent xterm from sending normal Enter
       if (ev.key === "Enter" && ev.shiftKey) {
         if (ev.type === "keydown") {
-          if (this.proc && !this.proc.killed) {
-            this.proc.stdin?.write("\x1b\r");
+          if (this.shell.isRunning) {
+            this.shell.write("\x1b\r");
           }
         }
         return false; // Block both keydown and keypress
@@ -503,11 +521,11 @@ export class TerminalView extends ItemView {
         // Cmd+Arrow: readline shortcuts for line navigation
         if (ev.metaKey) {
           if (ev.key === "ArrowRight") {
-            this.proc?.stdin?.write("\x05"); // Ctrl+E = end of line
+            this.shell.write("\x05"); // Ctrl+E = end of line
             return false;
           }
           if (ev.key === "ArrowLeft") {
-            this.proc?.stdin?.write("\x01"); // Ctrl+A = start of line
+            this.shell.write("\x01"); // Ctrl+A = start of line
             return false;
           }
         }
@@ -516,11 +534,11 @@ export class TerminalView extends ItemView {
     });
 
     this.term.onData((data: string) => {
-      if (this.proc && !this.proc.killed) {
+      if (this.shell.isRunning) {
         // Filter out focus in/out sequences before sending to shell
         const filtered = data.replace(/\x1b\[I/g, "").replace(/\x1b\[O/g, "");
         if (filtered) {
-          this.proc.stdin?.write(filtered);
+          this.shell.write(filtered);
         }
       }
     });
@@ -534,7 +552,7 @@ export class TerminalView extends ItemView {
     this.themeObserver.observe(document.body, { attributes: true, attributeFilter: ["class"] });
 
     // Watch for Obsidian layout changes (sidebar resize, etc.)
-    this.registerEvent((this.app.workspace as any).onLayoutChange(() => this.debouncedFit()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.debouncedFit()));
   }
 
   fit(): void {
@@ -632,8 +650,8 @@ export class TerminalView extends ItemView {
       if (dim && dim.rows > 0) {
         this.fit();
         // If shell already running, send resize
-        if (this.proc && !this.proc.killed) {
-          this.proc.stdin?.write(`\x1b]RESIZE;${dim.cols};${dim.rows}\x07`);
+        if (this.shell.isRunning) {
+          this.shell.resize(dim.cols, dim.rows);
         }
         return;
       }
@@ -668,7 +686,15 @@ export class TerminalView extends ItemView {
           this.outputBytes += text.length;
           // Hide loading after enough output to suggest the CLI has fully started
           if (this.loadingEl && this.outputBytes > 500) this.hideLoading();
-          this.hasOutput = true;
+          if (!this.hasOutput) {
+            this.hasOutput = true;
+            // First output confirms sprite is up — start remote session services
+            if (this.plugin.pluginData.runtimeMode === 'sprites' && this.plugin.spriteManager?.currentSpriteName) {
+              this.plugin.startRemoteSession(this.plugin.spriteManager.currentSpriteName).catch(err => {
+                console.warn('Failed to start remote session:', err);
+              });
+            }
+          }
           if (this.term) {
             const buffer = this.term.buffer.active;
             const atBottom = buffer.baseY === buffer.viewportY;
@@ -677,9 +703,12 @@ export class TerminalView extends ItemView {
           }
         },
         onStderr: (text: string) => {
+          this.hideLoading();
           this.term?.write(text);
         },
         onExit: (code: number | null, signal: string | null) => {
+          this.hideLoading();
+          this.hideReconnecting();
           if (isWindows && code === 9009) {
             this.term?.writeln("\r\n[Python not found]");
             this.term?.writeln("Install Python from https://python.org");
@@ -687,25 +716,31 @@ export class TerminalView extends ItemView {
           } else {
             this.term?.writeln(`\r\n[Process exited: ${code ?? signal}]`);
           }
-          this.proc = null;
+          this.plugin.stopRemoteSession();
+        },
+        onReconnecting: () => {
+          this.showReconnecting();
+        },
+        onReconnected: () => {
+          this.hideReconnecting();
+          this.term?.reset();
         },
       }
     );
-    this.proc = this.shell.proc;
 
     // Send resize when terminal dimensions change
     this.term?.onResize(({ cols: c, rows: r }) => {
-      if (this.proc && !this.proc.killed) {
-        this.proc.stdin?.write(`\x1b]RESIZE;${c};${r}\x07`);
+      if (this.shell.isRunning) {
+        this.shell.resize(c, r);
       }
     });
 
     // Safety: Verify dimensions after shell starts and send resize if needed
     setTimeout(() => {
-      if (this.proc && !this.proc.killed && this.fitAddon) {
+      if (this.shell.isRunning && this.fitAddon) {
         const currentDims = this.fitAddon.proposeDimensions();
         if (currentDims && currentDims.rows > 0) {
-          this.proc.stdin?.write(`\x1b]RESIZE;${currentDims.cols};${currentDims.rows}\x07`);
+          this.shell.resize(currentDims.cols, currentDims.rows);
         }
       }
     }, 500);
@@ -715,20 +750,27 @@ export class TerminalView extends ItemView {
     // Windows still needs auto-launch since we can't use exec there
     if (isWindows) {
       setTimeout(() => {
-        if (this.proc && !this.proc.killed) {
+        if (this.shell.isRunning) {
           const backend = this.getBackend();
           let winCmd = backend.binary;
           if (backend.binary === "claude") winCmd += " --ide";
           if (yoloMode && backend.yoloFlag) winCmd += " " + backend.yoloFlag;
-          this.proc.stdin?.write(winCmd + "\r");
+          this.shell.write(winCmd + "\r");
         }
       }, 1000);
     }
   }
 
+  writeToShell(data: string): void {
+    this.shell.write(data);
+  }
+
+  get isShellRunning(): boolean {
+    return this.shell.isRunning;
+  }
+
   stopShell(): void {
     this.shell.stop();
-    this.proc = null;
   }
 
   dispose(): void {

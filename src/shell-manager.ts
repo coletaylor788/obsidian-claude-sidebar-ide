@@ -4,27 +4,16 @@ import * as fs from "fs";
 import * as os from "os";
 import { StringDecoder } from "string_decoder";
 import type { Backend, PluginData } from "./types";
+import type { ShellOptions, ShellCallbacks, IShellManager } from "./shell-interface";
+
+export type { ShellOptions, ShellCallbacks };
 
 // PTY scripts are injected at build time by esbuild as base64-encoded strings.
 // See terminal_pty.py and terminal_win.py for readable source. Rebuild with: ./build.sh
 declare const __PTY_SCRIPT_B64__: string;
 declare const __WIN_PTY_SCRIPT_B64__: string;
 
-export interface ShellOptions {
-  workingDir?: string | null;
-  yoloMode?: boolean;
-  continueSession?: boolean;
-  cols?: number;
-  rows?: number;
-}
-
-export interface ShellCallbacks {
-  onStdout: (data: string) => void;
-  onStderr: (data: string) => void;
-  onExit: (code: number | null, signal: string | null) => void;
-}
-
-export class ShellManager {
+export class ShellManager implements IShellManager {
   proc: ChildProcess | null = null;
   private stdoutDecoder = new StringDecoder("utf8");
   private stderrDecoder = new StringDecoder("utf8");
@@ -105,7 +94,7 @@ export class ShellManager {
     let cliCmd = backend.binary;
     if (backend.binary === "claude" && idePort) cliCmd += " --ide";
     if (yoloMode && backend.yoloFlag) cliCmd += " " + backend.yoloFlag;
-    const additionalFlags = this.pluginData.additionalFlags;
+    const additionalFlags = ShellManager.sanitizeFlags(this.pluginData.additionalFlags);
     if (additionalFlags) cliCmd += " " + additionalFlags;
     let baseCmd = cliCmd;
     if (continueSession && backend.resumeFlag) {
@@ -195,5 +184,27 @@ export class ShellManager {
       if (remaining) this.callbacks?.onStderr(remaining);
       this.stderrDecoder = new StringDecoder("utf8");
     }
+  }
+
+  write(data: string): void {
+    this.proc?.stdin?.write(data);
+  }
+
+  resize(cols: number, rows: number): void {
+    this.write(`\x1b]RESIZE;${cols};${rows}\x07`);
+  }
+
+  get isRunning(): boolean {
+    return this.proc != null && !this.proc.killed;
+  }
+
+  // Reject shell metacharacters to prevent command injection via additionalFlags
+  private static sanitizeFlags(flags: string | null | undefined): string | null {
+    if (!flags) return null;
+    if (/[;&|`$(){}\\!\n\r<>'"#]/.test(flags)) {
+      console.warn('[ShellManager] additionalFlags rejected — contains shell metacharacters');
+      return null;
+    }
+    return flags.trim();
   }
 }

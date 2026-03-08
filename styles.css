@@ -77,6 +77,23 @@
 	to { transform: rotate(360deg); }
 }
 
+/* Reconnecting overlay — semi-transparent over frozen terminal */
+.vault-terminal-reconnecting {
+	position: absolute;
+	inset: 0;
+	z-index: 10;
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 12px;
+	color: var(--text-muted);
+	font-size: var(--font-ui-small);
+	background-color: rgba(0, 0, 0, 0.5);
+	backdrop-filter: blur(2px);
+	transition: opacity 0.3s ease;
+}
+
 /* IME support: keep textarea positioned near cursor for input method candidate window */
 .vault-terminal-host .xterm .xterm-helper-textarea {
 	/* Allow xterm.js to position the textarea for IME support */

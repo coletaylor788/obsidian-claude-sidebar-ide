@@ -1,6 +1,6 @@
 # Claude Sidebar IDE
 
-Run Claude Code (and other AI coding CLIs) directly in your Obsidian sidebar — with full IDE integration so Claude automatically knows what you're working on.
+Run Claude Code (and other AI coding CLIs) directly in your Obsidian sidebar — on desktop or mobile — with full IDE integration so Claude automatically knows what you're working on.
 
 **Forked from [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar) by Derek Larson.**
 
@@ -82,11 +82,11 @@ Automated releases via GitHub Actions. Push a version tag (`v1.0.0`) and the wor
 
 ## Requirements
 
-- Desktop only (macOS, Linux, Windows)
+### Desktop (Local Mode)
+
+- macOS, Linux, or Windows
 - Python 3
 - At least one AI CLI installed ([Claude Code](https://claude.com/claude-code), Codex, Gemini CLI, OpenCode, or Aider)
-
-### Windows
 
 Windows requires [pywinpty](https://github.com/andfoy/pywinpty):
 
@@ -95,6 +95,17 @@ pip install pywinpty
 ```
 
 Performance may be slower than macOS/Linux due to ConPTY overhead.
+
+### Mobile (Sprites Mode)
+
+Run Claude Code on your phone or tablet using [Sprites.dev](https://sprites.dev) cloud VMs.
+
+1. Create an account at [sprites.dev](https://sprites.dev) and get an API token
+2. In plugin settings, switch **Runtime Mode** to **Sprites.dev**
+3. Enter your API token
+4. A cloud VM is automatically provisioned — your vault files are synced up and changes sync back in real time
+
+No local CLI installation needed. Works on iOS and Android.
 
 ## Usage
 

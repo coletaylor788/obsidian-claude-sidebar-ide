@@ -12,13 +12,15 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.25.0",
     "obsidian": "^1.8.0",
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
-    "@xterm/addon-fit": "^0.10.0"
+    "ws": "^8.19.0"
   }
 }

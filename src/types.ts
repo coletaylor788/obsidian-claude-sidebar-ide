@@ -3,7 +3,9 @@ export interface PluginData {
   defaultWorkingDir?: string | null;
   additionalFlags?: string | null;
   lastCwd?: string | null;
-  enableIdeIntegration?: boolean;
+  runtimeMode?: 'local' | 'sprites';
+  spritesApiToken?: string | null;
+
 }
 
 export interface Backend {
