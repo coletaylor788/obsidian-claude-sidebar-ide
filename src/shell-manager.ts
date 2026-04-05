@@ -144,10 +144,30 @@ export class ShellManager implements IShellManager {
     const ptyScript = Buffer.from(scriptB64, "base64").toString("utf-8");
     fs.writeFileSync(ptyPath, ptyScript, { mode: 0o755 });
 
-    // Find Python on Windows - try multiple methods since GUI apps have PATH issues
+    // GUI apps (like Obsidian) don't inherit the user's shell PATH,
+    // so binaries in /opt/homebrew/bin etc. won't be found via process.env.PATH.
+    // Resolve the user's real PATH from their login shell first.
+    let resolvedPath = process.env.PATH || "";
+    if (!isWindows) {
+      try {
+        const shellOutput = execSync(
+          `${shell} -lic 'echo "__PATH__"; echo "$PATH"'`,
+          { encoding: "utf8", timeout: 2000 }
+        );
+        const shellPath = shellOutput.split("__PATH__\n")[1]?.trim().split("\n")[0];
+        if (shellPath) resolvedPath = shellPath;
+      } catch (e) {}
+    }
+
+    // Find Python using the resolved PATH (spawn uses parent PATH, not child env)
     let cmd = "python3";
-    if (isWindows) {
-      cmd = null as unknown as string;
+    if (!isWindows) {
+      try {
+        cmd = execSync(`${shell} -lic 'which python3'`, { encoding: "utf8", timeout: 2000 }).trim().split("\n").pop() || "python3";
+      } catch (e) {
+        cmd = "python3"; // fall back and hope it's on the default PATH
+      }
+    } else if (isWindows) {
       // 1. Try 'py' launcher (installed by python.org installer to C:\Windows)
       try {
         execSync("py --version", { stdio: "ignore", timeout: 2000 });
@@ -190,29 +210,19 @@ export class ShellManager implements IShellManager {
         cliCmd += " " + backend.resumeFlag;
       }
     }
+    // Pre-trust the working directory so Claude doesn't prompt on first run
+    const trustCmd = backend.binary === "claude" ? `claude config set -g trustedDirectories '${cwd}' 2>/dev/null; ` : "";
     const shellCmd = continueSession
-      ? `${cliCmd} || ${baseCmd} || true; exec $SHELL -i`
-      : `${cliCmd} || true; exec $SHELL -i`;
+      ? `${trustCmd}${cliCmd} || ${baseCmd} || true; exec $SHELL -i`
+      : `${trustCmd}${cliCmd} || true; exec $SHELL -i`;
     const args = isWindows
       ? [ptyPath, String(cols), String(rows), shell]
       : [ptyPath, String(cols), String(rows), shell, "-lc", shellCmd];
 
-    // Get PATH from user's login shell (GUI apps don't inherit shell config)
+    // Use the resolved PATH (already obtained above) for the shell environment
     let shellEnv: Record<string, string> = { ...process.env as Record<string, string>, TERM: "xterm-256color" };
     if (!isWindows) {
-      try {
-        const shellOutput = execSync(
-          `${shell} -lic 'echo "__PATH__"; echo "$PATH"'`,
-          { encoding: "utf8", timeout: 2000 }
-        );
-        // Extract PATH from after the marker (shell integration escapes pollute early output)
-        const shellPath = shellOutput.split("__PATH__\n")[1]?.trim().split("\n")[0];
-        if (shellPath) {
-          shellEnv.PATH = shellPath;
-        }
-      } catch (e) {
-        // Fall back to process.env.PATH if shell init fails
-      }
+      shellEnv.PATH = resolvedPath;
       // Ensure backend-specific paths are available
       const homeDir = process.env.HOME || "";
       const pathHints = (backend.pathHints || []).map(p => p.replace("~", homeDir));
