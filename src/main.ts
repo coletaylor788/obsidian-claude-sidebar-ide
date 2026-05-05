@@ -80,6 +80,8 @@ export default class VaultTerminalPlugin extends Plugin {
           const id = view.sessionId;
           // Pick up any /rename done inside claude since the last focus.
           view.refreshClaudeSessionTitle();
+          // User is looking at this tab now — clear any pending bell.
+          view.setNeedsAttention(false);
           if (id && id !== this.activeSessionId) {
             void this.switchSession(id);
           } else {

@@ -39,6 +39,10 @@ export class TerminalView extends ItemView {
   claudeSessionTitle: string | null = null;
   /** Cancel handle for the capture-poll started after shell spawn. */
   private claudeCaptureTimer: ReturnType<typeof setInterval> | null = null;
+  /** True when the terminal received a BEL (\x07) since the last focus —
+   *  Claude's hooks emit BEL on Notification/Stop, so this flags "the agent
+   *  is waiting on you." Cleared when the user focuses the tab. */
+  private needsAttention = false;
   private _shouldAutoScroll = true;
 
   constructor(leaf: WorkspaceLeaf, plugin: VaultTerminalPlugin) {
@@ -801,6 +805,11 @@ export class TerminalView extends ItemView {
       {
         onStdout: (text: string) => {
           this.outputBytes += text.length;
+          // BEL (\x07) flows through here when Claude's Notification/Stop
+          // hooks fire (~/.claude/hooks/attention.sh emits \a). Surface it
+          // as a tab-header indicator so the user can see at a glance which
+          // session is waiting. Cleared on focus.
+          if (text.includes("\x07")) this.setNeedsAttention(true);
           // Hide loading after enough output to suggest the CLI has fully started
           if (this.loadingEl && this.outputBytes > 500) this.hideLoading();
           if (!this.hasOutput) {
@@ -978,6 +987,18 @@ export class TerminalView extends ItemView {
     } catch {
       // Mobile or fs unavailable — leave title as-is.
     }
+  }
+
+  /**
+   * Toggle the "needs attention" indicator on this tab's header. CSS in
+   * styles.css (`.vault-terminal-needs-attention`) renders a pulsing bell
+   * pseudo-element. Idempotent — only does work when the value changes.
+   */
+  setNeedsAttention(needs: boolean): void {
+    if (this.needsAttention === needs) return;
+    this.needsAttention = needs;
+    const headerEl = (this.leaf as unknown as { tabHeaderEl?: HTMLElement }).tabHeaderEl;
+    if (headerEl) headerEl.classList.toggle("vault-terminal-needs-attention", needs);
   }
 
   /**

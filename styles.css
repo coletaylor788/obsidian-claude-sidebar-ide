@@ -117,6 +117,23 @@
 	max-width: 160px;
 }
 
+/* "Needs attention" indicator on Claude tab headers. Set when xterm receives
+ * a BEL byte (\x07) — emitted by the global Claude Code Notification/Stop
+ * hook (~/.claude/hooks/attention.sh). Cleared when the user focuses the
+ * tab. Renders a pulsing bell to the right of the title.
+ */
+.workspace-tab-header[data-type="vault-terminal"].vault-terminal-needs-attention .workspace-tab-header-inner::after {
+	content: "🔔";
+	margin-left: 6px;
+	font-size: var(--font-ui-small);
+	animation: vault-terminal-bell-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes vault-terminal-bell-pulse {
+	0%, 100% { opacity: 0.55; transform: scale(1); }
+	50%      { opacity: 1;    transform: scale(1.12); }
+}
+
 /* IME support: keep textarea positioned near cursor for input method candidate window */
 .vault-terminal-host .xterm .xterm-helper-textarea {
 	/* Allow xterm.js to position the textarea for IME support */
