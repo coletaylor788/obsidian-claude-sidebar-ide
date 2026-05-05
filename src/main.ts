@@ -31,6 +31,11 @@ export default class VaultTerminalPlugin extends Plugin {
   private activeSessionId: string | null = null;
   /** True while we are restoring a layout — suppresses auto-collect feedback. */
   private swapping = false;
+  /** False until initSessionGroups completes. Suppresses session-group writes
+   *  during Obsidian's workspace restore phase, where active-leaf-change /
+   *  layout-change events fire before we've established the correct
+   *  activeSessionId, and any captures or swaps would corrupt saved groups. */
+  private sessionGroupsReady = false;
   /** Debounced snapshot of the current main-area layout into the active session. */
   private snapshotDebounced: ReturnType<typeof debounce<[]>> | null = null;
 
@@ -69,7 +74,7 @@ export default class VaultTerminalPlugin extends Plugin {
     // clicks land you ready-to-type instead of needing a click into the terminal.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
-        if (this.swapping || !leaf) return;
+        if (!this.sessionGroupsReady || this.swapping || !leaf) return;
         if (leaf.view instanceof TerminalView) {
           const view = leaf.view;
           const id = view.sessionId;
@@ -90,7 +95,7 @@ export default class VaultTerminalPlugin extends Plugin {
     // Catch splits / tab moves / file opens that don't trip active-leaf-change.
     this.registerEvent(
       this.app.workspace.on("layout-change", () => {
-        if (this.swapping) return;
+        if (!this.sessionGroupsReady || this.swapping) return;
         this.dedupeSessionIds();
         this.snapshotDebounced?.();
         this.pruneStaleGroups();
@@ -676,6 +681,7 @@ export default class VaultTerminalPlugin extends Plugin {
       console.warn("[claude-sidebar-ide] initSessionGroups failed:", err);
     } finally {
       this.swapping = false;
+      this.sessionGroupsReady = true;
     }
   }
 
