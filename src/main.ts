@@ -64,15 +64,20 @@ export default class VaultTerminalPlugin extends Plugin {
     this.snapshotDebounced = debounce(() => this.captureActiveSnapshot(), 400);
     this.app.workspace.onLayoutReady(() => this.initSessionGroups());
 
-    // Swap main-area layout when the focused Claude session changes.
+    // Swap main-area layout when the focused Claude session changes;
+    // also direct keystrokes into the xterm element so Ctrl+Tab and tab-header
+    // clicks land you ready-to-type instead of needing a click into the terminal.
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (leaf) => {
         if (this.swapping || !leaf) return;
         if (leaf.view instanceof TerminalView) {
-          const id = leaf.view.sessionId;
+          const view = leaf.view;
+          const id = view.sessionId;
           if (id && id !== this.activeSessionId) {
             void this.switchSession(id);
           }
+          // Defer one tick to let Obsidian finish settling the leaf before xterm grabs focus.
+          setTimeout(() => view.term?.focus(), 0);
         } else if (leaf.getRoot() === this.app.workspace.rootSplit) {
           this.snapshotDebounced?.();
         }
