@@ -673,6 +673,7 @@ export default class VaultTerminalPlugin extends Plugin {
       }
 
       this.pruneStaleGroups();
+      this.dedupeClaudeSessionIds();
     } catch (err) {
       console.warn("[claude-sidebar-ide] initSessionGroups failed:", err);
     } finally {
@@ -852,6 +853,39 @@ export default class VaultTerminalPlugin extends Plugin {
     this.activeSessionId = id;
     this.pluginData.activeSessionId = id;
     void this.saveData(this.pluginData);
+  }
+
+  /** Return the set of claudeSessionIds owned by Claude leaves OTHER than the
+   *  given one. Used by the per-tab capture poll to avoid accidentally
+   *  grabbing a claude conversation that another tab already owns (race when
+   *  multiple tabs spawn in the same cwd). */
+  claudeSessionIdsInUseByOtherTabs(exceptLeaf: WorkspaceLeaf): Set<string> {
+    const out = new Set<string>();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (leaf === exceptLeaf) continue;
+      if (leaf.view instanceof TerminalView && leaf.view.claudeSessionId) {
+        out.add(leaf.view.claudeSessionId);
+      }
+    }
+    return out;
+  }
+
+  /** Detect Claude leaves sharing a claudeSessionId and clear all but the
+   *  first. Cleared tabs will recapture a fresh id on next user activity.
+   *  Called during init so a previous capture race or /rename fallout
+   *  self-corrects on the next reload. */
+  private dedupeClaudeSessionIds(): void {
+    const seen = new Set<string>();
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (!(leaf.view instanceof TerminalView)) continue;
+      const id = leaf.view.claudeSessionId;
+      if (!id) continue;
+      if (seen.has(id)) {
+        leaf.view.claudeSessionId = null;
+      } else {
+        seen.add(id);
+      }
+    }
   }
 
   /**

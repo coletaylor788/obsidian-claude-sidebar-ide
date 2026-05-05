@@ -910,10 +910,16 @@ export class TerminalView extends ItemView {
       try {
         const cap = require("./claude-session-capture");
         const current = cap.listClaudeSessions(projectDir);
-        const found = cap.findNewClaudeSession(beforeSnapshot, current);
+        // Two safeguards against grabbing another tab's id when multiple
+        // Claude tabs spawn in the same cwd:
+        //   1. afterMtimeMs ignores files created before THIS tab's spawn.
+        //   2. excludeIds refuses ids any other live tab has already claimed.
+        const excludeIds = this.plugin.claudeSessionIdsInUseByOtherTabs(this.leaf);
+        const found = cap.findNewClaudeSession(
+          beforeSnapshot, current, 1, startedAt, excludeIds,
+        );
         if (found) {
           this.claudeSessionId = found.sessionId;
-          // Trigger a workspace save so the id lands in workspace.json now.
           this.app.workspace.requestSaveLayout();
           this.stopClaudeSessionCapture();
           return;

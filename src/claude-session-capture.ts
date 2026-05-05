@@ -114,13 +114,17 @@ export function findNewClaudeSession(
   beforeSnapshot: ClaudeProjectFile[],
   current: ClaudeProjectFile[],
   minSize = 1,
+  afterMtimeMs?: number,
+  excludeIds?: ReadonlySet<string>,
 ): ClaudeProjectFile | null {
   const beforeBySessionId = new Map(
     beforeSnapshot.map((f) => [f.sessionId, f]),
   );
-  // Newest first.
+  // Newest first; filter by mtime threshold and cross-tab exclusions.
   const candidates = current
     .filter((f) => f.size >= minSize)
+    .filter((f) => afterMtimeMs === undefined || f.mtimeMs >= afterMtimeMs)
+    .filter((f) => !excludeIds || !excludeIds.has(f.sessionId))
     .sort((a, b) => b.mtimeMs - a.mtimeMs);
   for (const c of candidates) {
     const prior = beforeBySessionId.get(c.sessionId);

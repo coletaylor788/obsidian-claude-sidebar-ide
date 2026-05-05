@@ -107,4 +107,24 @@ describe("findNewClaudeSession", () => {
     const current = [f("older", 100, 50), f("newest", 300, 50), f("middle", 200, 50)];
     expect(findNewClaudeSession(before, current)?.sessionId).toBe("newest");
   });
+
+  test("afterMtimeMs filter excludes files older than spawn time", () => {
+    const before: ClaudeProjectFile[] = [];
+    const current = [f("pre-spawn", 100, 50), f("post-spawn", 300, 50)];
+    // Only post-spawn (mtime 300) is >= afterMtimeMs=200.
+    expect(findNewClaudeSession(before, current, 1, 200)?.sessionId).toBe("post-spawn");
+  });
+
+  test("excludeIds skips files already claimed by other tabs", () => {
+    const before: ClaudeProjectFile[] = [];
+    const current = [f("taken", 100, 50), f("free", 200, 50)];
+    expect(findNewClaudeSession(before, current, 1, undefined, new Set(["taken"]))?.sessionId)
+      .toBe("free");
+  });
+
+  test("excludeIds + afterMtimeMs together return null when nothing qualifies", () => {
+    const before: ClaudeProjectFile[] = [];
+    const current = [f("taken", 300, 50), f("old", 100, 50)];
+    expect(findNewClaudeSession(before, current, 1, 200, new Set(["taken"]))).toBeNull();
+  });
 });
