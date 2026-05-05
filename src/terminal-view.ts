@@ -33,6 +33,10 @@ export class TerminalView extends ItemView {
    *  spawn. Persists via getState/setState; on reload we use it to resume
    *  this exact conversation instead of falling back to claude --continue. */
   claudeSessionId: string | null = null;
+  /** The user-set title from claude /rename, sourced from the conversation
+   *  .jsonl. Drives the tab header label. Persisted so it shows immediately
+   *  on reload before the .jsonl re-read finishes. */
+  claudeSessionTitle: string | null = null;
   /** Cancel handle for the capture-poll started after shell spawn. */
   private claudeCaptureTimer: ReturnType<typeof setInterval> | null = null;
   private _shouldAutoScroll = true;
@@ -58,7 +62,7 @@ export class TerminalView extends ItemView {
   }
 
   getDisplayText(): string {
-    return "Claude";
+    return this.claudeSessionTitle || "Claude";
   }
 
   getIcon(): string {
@@ -82,6 +86,9 @@ export class TerminalView extends ItemView {
     if (typeof state?.claudeSessionId === "string") {
       this.claudeSessionId = state.claudeSessionId;
     }
+    if (typeof state?.claudeSessionTitle === "string") {
+      this.claudeSessionTitle = state.claudeSessionTitle;
+    }
     // If shell already started, restart with new settings
     if (this.shell.isRunning && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
       this.startShell(this.workingDir, this.yoloMode, this.continueSession);
@@ -94,6 +101,7 @@ export class TerminalView extends ItemView {
     if (this.yoloMode) state.yoloMode = this.yoloMode;
     if (this.sessionId) state.sessionId = this.sessionId;
     if (this.claudeSessionId) state.claudeSessionId = this.claudeSessionId;
+    if (this.claudeSessionTitle) state.claudeSessionTitle = this.claudeSessionTitle;
     // Auto-resume: persist if shell was running and setting is enabled
     if (this.shell.isRunning && this.plugin.pluginData.autoResume !== false) {
       state.continueSession = true;
@@ -922,6 +930,9 @@ export class TerminalView extends ItemView {
           this.claudeSessionId = found.sessionId;
           this.app.workspace.requestSaveLayout();
           this.stopClaudeSessionCapture();
+          // Title may already be set if the user /rename'd before we caught up;
+          // pull it now (and refresh whenever the leaf becomes active later).
+          this.refreshClaudeSessionTitle();
           return;
         }
         if (Date.now() - startedAt > TIMEOUT_MS) {
@@ -938,6 +949,34 @@ export class TerminalView extends ItemView {
     if (this.claudeCaptureTimer) {
       clearInterval(this.claudeCaptureTimer);
       this.claudeCaptureTimer = null;
+    }
+  }
+
+  /**
+   * Read the latest /rename'd title from this tab's claude conversation
+   * .jsonl and update the tab header if it changed. Cheap to call — does an
+   * fs read of one file. Invoked after capture and whenever the leaf becomes
+   * active (so /rename done in claude shows up the next time you focus).
+   */
+  refreshClaudeSessionTitle(): void {
+    if (!this.claudeSessionId) return;
+    let projectDir: string;
+    try {
+      const cap = require("./claude-session-capture");
+      const cwd = this.workingDir || this.plugin.pluginData.lastCwd || this.plugin.getVaultPath();
+      projectDir = cap.projectDirForCwd(cwd);
+      const filePath = `${projectDir}/${this.claudeSessionId}.jsonl`;
+      const newTitle: string | null = cap.readClaudeSessionTitle(filePath);
+      if (newTitle !== this.claudeSessionTitle) {
+        this.claudeSessionTitle = newTitle;
+        // Refresh the tab header. Obsidian re-reads getDisplayText() on
+        // 'layout-change'; we trigger that explicitly. Also persists via
+        // requestSaveLayout so the title survives a workspace save.
+        this.app.workspace.requestSaveLayout();
+        this.app.workspace.trigger("layout-change");
+      }
+    } catch {
+      // Mobile or fs unavailable — leave title as-is.
     }
   }
 

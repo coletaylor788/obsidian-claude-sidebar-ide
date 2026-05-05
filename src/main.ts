@@ -78,6 +78,8 @@ export default class VaultTerminalPlugin extends Plugin {
         if (leaf.view instanceof TerminalView) {
           const view = leaf.view;
           const id = view.sessionId;
+          // Pick up any /rename done inside claude since the last focus.
+          view.refreshClaudeSessionTitle();
           if (id && id !== this.activeSessionId) {
             void this.switchSession(id);
           } else {

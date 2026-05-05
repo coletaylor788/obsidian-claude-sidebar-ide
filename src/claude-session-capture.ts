@@ -103,6 +103,37 @@ export function listClaudeSessions(projectDir: string): ClaudeProjectFile[] {
 }
 
 /**
+ * Read the latest custom title from a Claude session .jsonl. Each `/rename`
+ * inside Claude appends a line of the form
+ *   {"type": "custom-title", "customTitle": "<name>", "sessionId": "..."}
+ * (and a paired "agent-name" line). The most-recent such line with a string
+ * `customTitle` is the current title. Returns null if no title has been set
+ * (file missing, no rename ever performed, or only the empty placeholder
+ * `custom-title` lines that Claude writes at session start).
+ */
+export function readClaudeSessionTitle(filePath: string): string | null {
+  let content: string;
+  try {
+    content = fs.readFileSync(filePath, "utf-8");
+  } catch {
+    return null;
+  }
+  let title: string | null = null;
+  for (const line of content.split("\n")) {
+    if (!line.includes('"customTitle"')) continue;
+    try {
+      const obj = JSON.parse(line) as { type?: string; customTitle?: unknown };
+      if (obj.type === "custom-title" && typeof obj.customTitle === "string" && obj.customTitle.length > 0) {
+        title = obj.customTitle;
+      }
+    } catch {
+      // ignore malformed lines
+    }
+  }
+  return title;
+}
+
+/**
  * Find the Claude session that this tab just spawned. Compares the current
  * directory listing against a snapshot taken before spawn; returns the newly-
  * created file (or modified — covers the case where claude reuses an empty

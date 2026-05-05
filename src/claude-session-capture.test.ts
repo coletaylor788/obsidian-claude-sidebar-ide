@@ -7,6 +7,7 @@ import {
   expandHome,
   findNewClaudeSession,
   listClaudeSessions,
+  readClaudeSessionTitle,
   type ClaudeProjectFile,
 } from "./claude-session-capture";
 
@@ -126,5 +127,56 @@ describe("findNewClaudeSession", () => {
     const before: ClaudeProjectFile[] = [];
     const current = [f("taken", 300, 50), f("old", 100, 50)];
     expect(findNewClaudeSession(before, current, 1, 200, new Set(["taken"]))).toBeNull();
+  });
+});
+
+describe("readClaudeSessionTitle", () => {
+  const writeJsonl = (lines: string[]): string => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "claude-title-"));
+    const file = path.join(tmp, "session.jsonl");
+    fs.writeFileSync(file, lines.join("\n") + "\n");
+    return file;
+  };
+
+  test("returns null when the file doesn't exist", () => {
+    expect(readClaudeSessionTitle("/no/such/file.jsonl")).toBeNull();
+  });
+
+  test("returns null when no custom-title line carries a customTitle field", () => {
+    const file = writeJsonl([
+      '{"type":"custom-title","sessionId":"x"}',
+      '{"type":"agent-name","sessionId":"x"}',
+      '{"type":"chat","content":"hi"}',
+    ]);
+    expect(readClaudeSessionTitle(file)).toBeNull();
+  });
+
+  test("returns the most-recent customTitle (later /rename wins)", () => {
+    const file = writeJsonl([
+      '{"type":"custom-title","customTitle":"original","sessionId":"x"}',
+      '{"type":"chat","content":"hi"}',
+      '{"type":"custom-title","customTitle":"renamed","sessionId":"x"}',
+      '{"type":"custom-title","customTitle":"final","sessionId":"x"}',
+    ]);
+    expect(readClaudeSessionTitle(file)).toBe("final");
+  });
+
+  test("treats empty-string customTitle as unset", () => {
+    const file = writeJsonl([
+      '{"type":"custom-title","customTitle":"named","sessionId":"x"}',
+      '{"type":"custom-title","customTitle":"","sessionId":"x"}',
+    ]);
+    // Empty string after a real name shouldn't reset to null in our model —
+    // we just take the latest non-empty. Pick whichever semantic is desired.
+    expect(readClaudeSessionTitle(file)).toBe("named");
+  });
+
+  test("ignores malformed lines without throwing", () => {
+    const file = writeJsonl([
+      "not json",
+      '{"type":"custom-title","customTitle":"good","sessionId":"x"}',
+      "{broken json,",
+    ]);
+    expect(readClaudeSessionTitle(file)).toBe("good");
   });
 });
