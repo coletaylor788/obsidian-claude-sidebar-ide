@@ -10,6 +10,10 @@ export interface PluginData {
   autoResume?: boolean;
   /** Per-Claude-session main-area layout snapshots, keyed by stable sessionId. */
   sessionGroups?: SessionGroups;
+  /** Most-recently-active Claude session at quit time. Used on reload to
+   *  pick the right tab to sync with main, so we don't capture stale main
+   *  state into the wrong session's group. */
+  activeSessionId?: string;
 }
 
 export interface Backend {

@@ -560,7 +560,7 @@ export default class VaultTerminalPlugin extends Plugin {
       if (leaf.view instanceof TerminalView) {
         leaf.view.sessionId = sessionId;
       }
-      this.activeSessionId = sessionId;
+      this.setActiveSession(sessionId);
       this.app.workspace.revealLeaf(leaf);
       // Focus the terminal after the leaf is revealed
       setTimeout(() => {
@@ -638,12 +638,29 @@ export default class VaultTerminalPlugin extends Plugin {
           leaf.view.sessionId = generateSessionId();
         }
       }
-      const focused = this.app.workspace.getActiveViewOfType(TerminalView);
-      if (focused?.sessionId) {
-        this.activeSessionId = focused.sessionId;
-      } else if (claudeLeaves[0]?.view instanceof TerminalView) {
-        this.activeSessionId = claudeLeaves[0].view.sessionId;
+      // Resolve initial active session in this priority order:
+      //   1. pluginData.activeSessionId (the session that was active at quit) —
+      //      this matters because Obsidian doesn't auto-focus a sidebar leaf on
+      //      reload, so getActiveViewOfType is unreliable here.
+      //   2. The currently-focused TerminalView, if any.
+      //   3. The first Claude leaf as a fallback.
+      const liveIds = new Set<string>();
+      for (const leaf of claudeLeaves) {
+        if (leaf.view instanceof TerminalView && leaf.view.sessionId) {
+          liveIds.add(leaf.view.sessionId);
+        }
       }
+      const persisted = this.pluginData.activeSessionId;
+      const focused = this.app.workspace.getActiveViewOfType(TerminalView);
+      let resolved: string | null = null;
+      if (persisted && liveIds.has(persisted)) {
+        resolved = persisted;
+      } else if (focused?.sessionId && liveIds.has(focused.sessionId)) {
+        resolved = focused.sessionId;
+      } else if (claudeLeaves[0]?.view instanceof TerminalView) {
+        resolved = claudeLeaves[0].view.sessionId ?? null;
+      }
+      if (resolved) this.setActiveSession(resolved);
 
       // Sync main with the active session's saved group so the first user
       // action doesn't destructively capture stale workspace state into it.
@@ -764,7 +781,7 @@ export default class VaultTerminalPlugin extends Plugin {
       if (incoming) {
         await this.restoreSession(incoming);
       }
-      this.activeSessionId = newId;
+      this.setActiveSession(newId);
       await this.saveData(this.pluginData);
 
       // restoreSession sets the visible tab in main via setActiveLeaf, which
@@ -822,8 +839,17 @@ export default class VaultTerminalPlugin extends Plugin {
       if (this.activeSessionId && this.activeSessionId !== newestId) {
         this.captureToSession(this.activeSessionId);
       }
-      this.activeSessionId = newestId;
+      this.setActiveSession(newestId);
     }
+  }
+
+  /** In-memory + on-disk update of the active session pointer, so reload picks
+   *  the right tab back up. captureToSession / saveData calls elsewhere may
+   *  also persist this — having a single helper keeps all writers consistent. */
+  private setActiveSession(id: string): void {
+    this.activeSessionId = id;
+    this.pluginData.activeSessionId = id;
+    void this.saveData(this.pluginData);
   }
 
   /** Drop session-group entries whose Claude tab no longer exists. */
