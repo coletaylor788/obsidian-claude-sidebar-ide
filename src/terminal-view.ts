@@ -29,6 +29,12 @@ export class TerminalView extends ItemView {
   private continueSession = false;
   /** Stable id used by the session-groups feature. Public so main.ts can read/seed it. */
   sessionId: string | null = null;
+  /** Claude's per-conversation session id, captured from disk after first
+   *  spawn. Persists via getState/setState; on reload we use it to resume
+   *  this exact conversation instead of falling back to claude --continue. */
+  claudeSessionId: string | null = null;
+  /** Cancel handle for the capture-poll started after shell spawn. */
+  private claudeCaptureTimer: ReturnType<typeof setInterval> | null = null;
   private _shouldAutoScroll = true;
 
   constructor(leaf: WorkspaceLeaf, plugin: VaultTerminalPlugin) {
@@ -73,6 +79,9 @@ export class TerminalView extends ItemView {
     if (typeof state?.sessionId === "string") {
       this.sessionId = state.sessionId;
     }
+    if (typeof state?.claudeSessionId === "string") {
+      this.claudeSessionId = state.claudeSessionId;
+    }
     // If shell already started, restart with new settings
     if (this.shell.isRunning && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
       this.startShell(this.workingDir, this.yoloMode, this.continueSession);
@@ -84,6 +93,7 @@ export class TerminalView extends ItemView {
     if (this.workingDir) state.workingDir = this.workingDir;
     if (this.yoloMode) state.yoloMode = this.yoloMode;
     if (this.sessionId) state.sessionId = this.sessionId;
+    if (this.claudeSessionId) state.claudeSessionId = this.claudeSessionId;
     // Auto-resume: persist if shell was running and setting is enabled
     if (this.shell.isRunning && this.plugin.pluginData.autoResume !== false) {
       state.continueSession = true;
@@ -772,6 +782,7 @@ export class TerminalView extends ItemView {
         workingDir,
         yoloMode,
         continueSession,
+        claudeSessionId: this.claudeSessionId,
         cols: this.term?.cols,
         rows: this.term?.rows,
       },
@@ -836,6 +847,13 @@ export class TerminalView extends ItemView {
       }
     });
 
+    // Kick off the per-tab claude session-id capture (Claude backend only,
+    // and only if we don't already have one). Defer until next tick so the
+    // shell has actually started.
+    if (this.getBackend().binary === "claude" && !this.claudeSessionId) {
+      setTimeout(() => this.startClaudeSessionCapture(cwd), 100);
+    }
+
     // Safety: Verify dimensions after shell starts and send resize if needed
     setTimeout(() => {
       if (this.shell.isRunning && this.fitAddon) {
@@ -862,6 +880,58 @@ export class TerminalView extends ItemView {
     }
   }
 
+  /**
+   * Watch the claude project dir for the .jsonl that this tab's shell creates.
+   * Polls every 2s for up to 10 minutes; once a new file with content appears,
+   * stores its filename (claude session id) on the view, and Obsidian's next
+   * workspace save persists it via getState().
+   */
+  private startClaudeSessionCapture(cwd: string): void {
+    this.stopClaudeSessionCapture();
+    let beforeSnapshot: ReturnType<typeof import("./claude-session-capture").listClaudeSessions>;
+    let projectDir: string;
+    try {
+      const cap = require("./claude-session-capture");
+      const home = process.env.HOME || "";
+      projectDir = `${home}/.claude/projects/${cap.encodeCwdForClaudeProjectDir(cwd)}`;
+      beforeSnapshot = cap.listClaudeSessions(projectDir);
+    } catch {
+      return; // Mobile or other env where fs/path aren't available.
+    }
+
+    const startedAt = Date.now();
+    const TIMEOUT_MS = 10 * 60 * 1000;
+    const POLL_MS = 2000;
+
+    this.claudeCaptureTimer = setInterval(() => {
+      try {
+        const cap = require("./claude-session-capture");
+        const current = cap.listClaudeSessions(projectDir);
+        const found = cap.findNewClaudeSession(beforeSnapshot, current);
+        if (found) {
+          this.claudeSessionId = found.sessionId;
+          // Trigger a workspace save so the id lands in workspace.json now.
+          this.app.workspace.requestSaveLayout();
+          this.stopClaudeSessionCapture();
+          return;
+        }
+        if (Date.now() - startedAt > TIMEOUT_MS) {
+          this.stopClaudeSessionCapture();
+        }
+      } catch (err) {
+        console.warn("[claude-sidebar-ide] session capture error:", err);
+        this.stopClaudeSessionCapture();
+      }
+    }, POLL_MS);
+  }
+
+  private stopClaudeSessionCapture(): void {
+    if (this.claudeCaptureTimer) {
+      clearInterval(this.claudeCaptureTimer);
+      this.claudeCaptureTimer = null;
+    }
+  }
+
   writeToShell(data: string): void {
     this.shell.write(data);
   }
@@ -872,6 +942,7 @@ export class TerminalView extends ItemView {
 
   stopShell(): void {
     this.shell.stop();
+    this.stopClaudeSessionCapture();
   }
 
   dispose(): void {

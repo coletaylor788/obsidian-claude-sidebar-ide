@@ -21,8 +21,15 @@ export interface Backend {
   binary: string;
   pathHints: string[];
   yoloFlag: string | null;
+  /** Flag to resume the most-recent conversation (e.g. claude `--continue`). */
   resumeFlag: string | null;
+  /** Whether resumeFlag replaces the binary call (e.g. `codex resume --last`). */
   resumeIsSubcommand: boolean;
+  /** Flag to resume a SPECIFIC conversation by id (e.g. claude `--resume`).
+   *  When the plugin has captured a per-tab session id, it appends the id
+   *  after this flag instead of using resumeFlag, so each tab persists its
+   *  own conversation rather than collapsing onto the cwd's most-recent one. */
+  resumeByIdFlag?: string | null;
 }
 
 export interface WsClient {

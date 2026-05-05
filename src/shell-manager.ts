@@ -112,6 +112,7 @@ export class ShellManager implements IShellManager {
       workingDir = null,
       yoloMode = false,
       continueSession = false,
+      claudeSessionId = null,
       cols = 80,
       rows = 24,
     } = opts;
@@ -201,13 +202,21 @@ export class ShellManager implements IShellManager {
     const additionalFlags = ShellManager.sanitizeFlags(this.pluginData.additionalFlags);
     if (additionalFlags) cliCmd += " " + additionalFlags;
     let baseCmd = cliCmd;
-    if (continueSession && backend.resumeFlag) {
-      if (backend.resumeIsSubcommand) {
-        // e.g. "codex resume --last" — replace the whole command
-        cliCmd = backend.binary + " " + backend.resumeFlag;
-        if (additionalFlags) cliCmd += " " + additionalFlags;
-      } else {
-        cliCmd += " " + backend.resumeFlag;
+    if (continueSession) {
+      // Prefer resume-by-id when we have a specific conversation captured for
+      // this tab — keeps each tab's claude conversation distinct across reload.
+      // Fall back to the generic resumeFlag (e.g. --continue) otherwise.
+      if (claudeSessionId && backend.resumeByIdFlag) {
+        // Shell-quote the id defensively even though UUIDs are safe.
+        cliCmd += ` ${backend.resumeByIdFlag} '${claudeSessionId.replace(/'/g, "'\\''")}'`;
+      } else if (backend.resumeFlag) {
+        if (backend.resumeIsSubcommand) {
+          // e.g. "codex resume --last" — replace the whole command
+          cliCmd = backend.binary + " " + backend.resumeFlag;
+          if (additionalFlags) cliCmd += " " + additionalFlags;
+        } else {
+          cliCmd += " " + backend.resumeFlag;
+        }
       }
     }
     // Pre-trust the working directory so Claude doesn't prompt on first run

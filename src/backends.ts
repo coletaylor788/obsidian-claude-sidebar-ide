@@ -8,6 +8,7 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     yoloFlag: "--dangerously-skip-permissions",
     resumeFlag: "--continue",
     resumeIsSubcommand: false,
+    resumeByIdFlag: "--resume",
   },
   codex: {
     label: "Codex",
