@@ -118,6 +118,10 @@ export class TerminalView extends ItemView {
       if (!this.shell.isRunning) {
         this.startShell(this.workingDir, this.yoloMode, this.continueSession);
       }
+      // Push the persisted title (if any) into the tab header now that the
+      // leaf is fully attached. Otherwise reloaded tabs show "Claude" until
+      // the user hovers or clicks them.
+      this.applyTabHeaderTitle();
     }, 10);
     this.setupEscapeHandler();
   }
@@ -960,23 +964,39 @@ export class TerminalView extends ItemView {
    */
   refreshClaudeSessionTitle(): void {
     if (!this.claudeSessionId) return;
-    let projectDir: string;
     try {
       const cap = require("./claude-session-capture");
       const cwd = this.workingDir || this.plugin.pluginData.lastCwd || this.plugin.getVaultPath();
-      projectDir = cap.projectDirForCwd(cwd);
+      const projectDir = cap.projectDirForCwd(cwd);
       const filePath = `${projectDir}/${this.claudeSessionId}.jsonl`;
       const newTitle: string | null = cap.readClaudeSessionTitle(filePath);
       if (newTitle !== this.claudeSessionTitle) {
         this.claudeSessionTitle = newTitle;
-        // Refresh the tab header. Obsidian re-reads getDisplayText() on
-        // 'layout-change'; we trigger that explicitly. Also persists via
-        // requestSaveLayout so the title survives a workspace save.
+        this.applyTabHeaderTitle();
         this.app.workspace.requestSaveLayout();
-        this.app.workspace.trigger("layout-change");
       }
     } catch {
       // Mobile or fs unavailable — leave title as-is.
+    }
+  }
+
+  /**
+   * Force the visible tab header text to match getDisplayText(). Obsidian
+   * only reads getDisplayText() once at view-creation time for the visible
+   * label (it's used for the hover tooltip on subsequent reads). To update
+   * the visible text after the tab already exists we set the inner title
+   * element directly.
+   */
+  private applyTabHeaderTitle(): void {
+    const leafAny = this.leaf as unknown as {
+      tabHeaderInnerTitleEl?: HTMLElement;
+      updateHeader?: () => void;
+    };
+    if (typeof leafAny.updateHeader === "function") {
+      leafAny.updateHeader();
+    }
+    if (leafAny.tabHeaderInnerTitleEl) {
+      leafAny.tabHeaderInnerTitleEl.textContent = this.getDisplayText();
     }
   }
 
