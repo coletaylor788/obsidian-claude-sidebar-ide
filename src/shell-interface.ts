@@ -6,6 +6,11 @@ export interface ShellOptions {
    *  conversation instead of the cwd's most-recent. Lets each tab keep its
    *  own claude conversation across plugin reloads. */
   claudeSessionId?: string | null;
+  /** This tab's plugin sessionId (UUID). Exposed to the spawned shell as
+   *  CLAUDE_OBSIDIAN_TAB_ID so that the per-event hook scripts can include
+   *  it in their /notify POST, letting the plugin target the bell to the
+   *  exact tab that fired the event. */
+  tabId?: string | null;
   cols?: number;
   rows?: number;
 }

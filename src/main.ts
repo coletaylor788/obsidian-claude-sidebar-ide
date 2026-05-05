@@ -384,7 +384,7 @@ export default class VaultTerminalPlugin extends Plugin {
   startIdeServer(): void {
     const { IdeServer: IdeServerImpl } = require("./ide-server");
     this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
-    this.ideServer!.notifyCallback = (type: string, notificationType: string | null, _message: string | null) => {
+    this.ideServer!.notifyCallback = (type: string, notificationType: string | null, _message: string | null, tabId: string | null) => {
       if (type === "stop") {
         new Notice("Claude finished", 4000);
       } else if (type === "notification") {
@@ -394,15 +394,18 @@ export default class VaultTerminalPlugin extends Plugin {
           new Notice("Claude is asking a question", 8000);
         }
       }
-      // Mark the most-recently-focused Claude tab as needing attention. The
-      // /notify endpoint doesn't carry a session id, so we can't pinpoint
-      // which tab fired this; the last-focused tab is the best heuristic.
-      // Skip if the user is already looking at that tab.
-      const target = this.lastActiveTerminalLeaf;
-      if (!target) return;
-      const isCurrentlyFocused = this.app.workspace.getActiveViewOfType(TerminalView)?.leaf === target;
+      // Find the source tab via tab_id (set in /notify body by our hook
+      // scripts from the CLAUDE_OBSIDIAN_TAB_ID env var). Fall back to the
+      // most-recently-focused tab if the id isn't present (older spawns).
+      const targetLeaf = tabId
+        ? this.app.workspace.getLeavesOfType(VIEW_TYPE).find(
+            (l) => l.view instanceof TerminalView && l.view.sessionId === tabId,
+          ) ?? null
+        : this.lastActiveTerminalLeaf;
+      if (!targetLeaf) return;
+      const isCurrentlyFocused = this.app.workspace.getActiveViewOfType(TerminalView)?.leaf === targetLeaf;
       if (isCurrentlyFocused) return;
-      const view = target.view;
+      const view = targetLeaf.view;
       if (view instanceof TerminalView) view.setNeedsAttention(true);
     };
     this.ideServer!.start();

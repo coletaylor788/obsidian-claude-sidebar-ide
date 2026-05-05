@@ -799,6 +799,7 @@ export class TerminalView extends ItemView {
         yoloMode,
         continueSession,
         claudeSessionId: this.claudeSessionId,
+        tabId: this.sessionId,
         cols: this.term?.cols,
         rows: this.term?.rows,
       },

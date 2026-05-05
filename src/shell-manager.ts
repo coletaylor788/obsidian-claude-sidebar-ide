@@ -23,6 +23,7 @@ process.stdin.on("data", (c) => (input += c));
 process.stdin.on("end", () => {
   try {
     const data = JSON.parse(input);
+    const tabId = process.env.CLAUDE_OBSIDIAN_TAB_ID || null;
     const lockDir = path.join(require("os").homedir(), ".claude", "ide");
     if (!fs.existsSync(lockDir)) { out(); return; }
     const files = fs.readdirSync(lockDir).filter((f) => f.endsWith(".lock"));
@@ -35,6 +36,7 @@ process.stdin.on("end", () => {
           type: "notification",
           notification_type: data.notification_type || null,
           message: data.message || null,
+          tab_id: tabId,
         });
         const req = http.request({
           hostname: "127.0.0.1", port, path: "/notify", method: "POST",
@@ -63,6 +65,7 @@ let input = "";
 process.stdin.on("data", (c) => (input += c));
 process.stdin.on("end", () => {
   try {
+    const tabId = process.env.CLAUDE_OBSIDIAN_TAB_ID || null;
     const lockDir = path.join(require("os").homedir(), ".claude", "ide");
     if (!fs.existsSync(lockDir)) { out(); return; }
     const files = fs.readdirSync(lockDir).filter((f) => f.endsWith(".lock"));
@@ -71,7 +74,7 @@ process.stdin.on("end", () => {
         const lock = JSON.parse(fs.readFileSync(path.join(lockDir, f), "utf8"));
         if (lock.ideName !== "Obsidian") continue;
         const port = parseInt(f.replace(".lock", ""), 10);
-        const body = JSON.stringify({ type: "stop" });
+        const body = JSON.stringify({ type: "stop", tab_id: tabId });
         const req = http.request({
           hostname: "127.0.0.1", port, path: "/notify", method: "POST",
           headers: {
@@ -113,6 +116,7 @@ export class ShellManager implements IShellManager {
       yoloMode = false,
       continueSession = false,
       claudeSessionId = null,
+      tabId = null,
       cols = 80,
       rows = 24,
     } = opts;
@@ -246,6 +250,11 @@ export class ShellManager implements IShellManager {
     if (backend.binary === "claude" && idePort) {
       shellEnv.CLAUDE_CODE_SSE_PORT = String(idePort);
       shellEnv.ENABLE_IDE_INTEGRATION = "true";
+    }
+    if (tabId) {
+      // Picked up by NOTIFY_HOOK_SCRIPT / STOP_HOOK_SCRIPT so /notify POSTs
+      // include this tab's id, letting the plugin target the bell precisely.
+      shellEnv.CLAUDE_OBSIDIAN_TAB_ID = tabId;
     }
 
     this.proc = spawn(cmd, args, {

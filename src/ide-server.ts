@@ -19,7 +19,7 @@ export class IdeServer {
   private pendingDiffPromises = new Map<number, (result: string) => void>();
 
   public port: number | null = null;
-  public notifyCallback: ((type: string, notificationType: string | null, message: string | null) => void) | null = null;
+  public notifyCallback: ((type: string, notificationType: string | null, message: string | null, tabId: string | null) => void) | null = null;
 
   constructor(
     private app: App,
@@ -43,14 +43,15 @@ export class IdeServer {
         req.on("end", () => {
           try {
             const data = JSON.parse(body);
-            // Temporary: dump the full body so we can see what claude sends
-            // (looking for a session id we can use to target the right tab).
-            console.log("[claude-sidebar-ide] /notify body:", body);
             const type = data.type || "notification";
             const notificationType = data.notification_type || null;
             const message = data.message || null;
+            // tab_id is set by the plugin's installed hook scripts from the
+            // CLAUDE_OBSIDIAN_TAB_ID env var; lets us target the bell to
+            // the exact tab that fired this event.
+            const tabId = typeof data.tab_id === "string" ? data.tab_id : null;
             if (this.notifyCallback) {
-              this.notifyCallback(type, notificationType, message);
+              this.notifyCallback(type, notificationType, message, tabId);
             }
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify({ ok: true }));
