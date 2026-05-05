@@ -19,9 +19,15 @@ describe("encodeCwdForClaudeProjectDir", () => {
     expect(encodeCwdForClaudeProjectDir("/Users/cole/")).toBe("-Users-cole");
     expect(encodeCwdForClaudeProjectDir("/Users//cole")).toBe("-Users-cole");
   });
-  test("preserves dots in path segments", () => {
+  test("dots in path segments also encode to dashes (matches claude's actual layout)", () => {
+    // /Users/cotaylor/.claude → -Users-cotaylor--claude (slash before .claude
+    // becomes dash, and the dot itself becomes another dash → double dash)
     expect(encodeCwdForClaudeProjectDir("/Users/cotaylor/.claude"))
-      .toBe("-Users-cotaylor-.claude");
+      .toBe("-Users-cotaylor--claude");
+  });
+  test("paths with dashes are preserved", () => {
+    expect(encodeCwdForClaudeProjectDir("/Users/cotaylor/Library/CloudStorage/OneDrive-Microsoft/claude/context"))
+      .toBe("-Users-cotaylor-Library-CloudStorage-OneDrive-Microsoft-claude-context");
   });
 });
 

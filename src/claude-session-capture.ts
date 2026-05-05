@@ -27,17 +27,39 @@ export interface ClaudeProjectFile {
 /**
  * Replicate Claude's cwd-to-projects-dir encoding. Observed convention:
  *   /Users/cotaylor/git/AgentInbox  →  -Users-cotaylor-git-AgentInbox
- * i.e., replace every `/` with `-`. A leading slash naturally produces a
- * leading dash. We don't special-case dots — Claude appears to leave them in
- * the filename (e.g. `.claude` becomes `-.claude` segment).
+ *   /Users/cotaylor/.claude         →  -Users-cotaylor--claude   (dots also map to `-`)
+ * Replace every `/` and every `.` with `-`. A leading slash naturally
+ * produces a leading dash.
  *
- * If Claude's encoding ever changes, the discovery flow can fall back to
- * scanning all project dirs (see findNewClaudeSession below).
+ * NOTE: This function does NOT resolve symlinks — call realpath first if the
+ * cwd may include symlinked path segments (Claude itself resolves real paths
+ * before encoding, so the resulting dir would otherwise mismatch).
  */
 export function encodeCwdForClaudeProjectDir(cwd: string): string {
-  // Normalize: collapse double slashes, trim trailing slash.
   const normalized = cwd.replace(/\/+/g, "/").replace(/\/$/, "");
-  return normalized.replace(/\//g, "-");
+  return normalized.replace(/[/.]/g, "-");
+}
+
+/**
+ * Resolve symlinks to the real path. Returns the input unchanged on failure.
+ * Used before encoding so the produced dir name matches what Claude creates.
+ */
+export function resolveRealPath(cwd: string): string {
+  try {
+    return fs.realpathSync(cwd);
+  } catch {
+    return cwd;
+  }
+}
+
+/**
+ * Compute the absolute path to Claude's project dir for a given cwd.
+ * Resolves symlinks AND applies the encoding.
+ */
+export function projectDirForCwd(cwd: string): string {
+  const home = process.env.HOME || "";
+  const real = resolveRealPath(cwd);
+  return path.join(home, ".claude", "projects", encodeCwdForClaudeProjectDir(real));
 }
 
 /** Resolve `~` and absolute paths to a real fs path. */

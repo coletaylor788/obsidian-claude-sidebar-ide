@@ -892,8 +892,11 @@ export class TerminalView extends ItemView {
     let projectDir: string;
     try {
       const cap = require("./claude-session-capture");
-      const home = process.env.HOME || "";
-      projectDir = `${home}/.claude/projects/${cap.encodeCwdForClaudeProjectDir(cwd)}`;
+      // projectDirForCwd resolves symlinks (so /Users/cotaylor/claude/context
+      // becomes the OneDrive realpath) and applies the slash+dot encoding
+      // (/.claude → --claude). Without both, the resulting dir name
+      // doesn't match what claude actually creates.
+      projectDir = cap.projectDirForCwd(cwd);
       beforeSnapshot = cap.listClaudeSessions(projectDir);
     } catch {
       return; // Mobile or other env where fs/path aren't available.
