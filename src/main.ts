@@ -394,6 +394,16 @@ export default class VaultTerminalPlugin extends Plugin {
           new Notice("Claude is asking a question", 8000);
         }
       }
+      // Mark the most-recently-focused Claude tab as needing attention. The
+      // /notify endpoint doesn't carry a session id, so we can't pinpoint
+      // which tab fired this; the last-focused tab is the best heuristic.
+      // Skip if the user is already looking at that tab.
+      const target = this.lastActiveTerminalLeaf;
+      if (!target) return;
+      const isCurrentlyFocused = this.app.workspace.getActiveViewOfType(TerminalView)?.leaf === target;
+      if (isCurrentlyFocused) return;
+      const view = target.view;
+      if (view instanceof TerminalView) view.setNeedsAttention(true);
     };
     this.ideServer!.start();
   }

@@ -805,11 +805,6 @@ export class TerminalView extends ItemView {
       {
         onStdout: (text: string) => {
           this.outputBytes += text.length;
-          // BEL (\x07) flows through here when Claude's Notification/Stop
-          // hooks fire (~/.claude/hooks/attention.sh emits \a). Surface it
-          // as a tab-header indicator so the user can see at a glance which
-          // session is waiting. Cleared on focus.
-          if (text.includes("\x07")) this.setNeedsAttention(true);
           // Hide loading after enough output to suggest the CLI has fully started
           if (this.loadingEl && this.outputBytes > 500) this.hideLoading();
           if (!this.hasOutput) {
