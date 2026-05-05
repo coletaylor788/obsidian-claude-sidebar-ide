@@ -650,9 +650,8 @@ export default class VaultTerminalPlugin extends Plugin {
       //   3. The first Claude leaf as a fallback.
       const liveIds = new Set<string>();
       for (const leaf of claudeLeaves) {
-        if (leaf.view instanceof TerminalView && leaf.view.sessionId) {
-          liveIds.add(leaf.view.sessionId);
-        }
+        const id = this.leafSessionId(leaf);
+        if (id) liveIds.add(id);
       }
       const persisted = this.pluginData.activeSessionId;
       const focused = this.app.workspace.getActiveViewOfType(TerminalView);
@@ -865,13 +864,27 @@ export default class VaultTerminalPlugin extends Plugin {
     void this.saveData(this.pluginData);
   }
 
+  /**
+   * Read the sessionId for a Claude leaf, falling back to the leaf's persisted
+   * view state when the live view hasn't been instantiated yet. Obsidian lazy-
+   * loads tabs that aren't currently visible in their tab group, so a dormant
+   * Claude tab may exist as a leaf with no `TerminalView` yet — but its
+   * sessionId is still present in workspace.json via getViewState.
+   */
+  private leafSessionId(leaf: WorkspaceLeaf): string | null {
+    if (leaf.view instanceof TerminalView && leaf.view.sessionId) {
+      return leaf.view.sessionId;
+    }
+    const stored = (leaf.getViewState()?.state as { sessionId?: unknown } | undefined)?.sessionId;
+    return typeof stored === "string" ? stored : null;
+  }
+
   /** Drop session-group entries whose Claude tab no longer exists. */
   private pruneStaleGroups(): void {
     const liveIds: string[] = [];
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-      if (leaf.view instanceof TerminalView && leaf.view.sessionId) {
-        liveIds.push(leaf.view.sessionId);
-      }
+      const id = this.leafSessionId(leaf);
+      if (id) liveIds.push(id);
     }
     const before = this.pluginData.sessionGroups;
     const after = pruneSessionGroups(before, liveIds);
@@ -879,7 +892,6 @@ export default class VaultTerminalPlugin extends Plugin {
       this.pluginData.sessionGroups = after;
       void this.saveData(this.pluginData);
     }
-    // If the active session was closed, blank it so a future switch fires cleanly.
     if (this.activeSessionId && !liveIds.includes(this.activeSessionId)) {
       this.activeSessionId = liveIds[0] ?? null;
     }
