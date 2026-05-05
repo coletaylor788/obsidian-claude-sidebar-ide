@@ -43,6 +43,9 @@ export class IdeServer {
         req.on("end", () => {
           try {
             const data = JSON.parse(body);
+            // Temporary: dump the full body so we can see what claude sends
+            // (looking for a session id we can use to target the right tab).
+            console.log("[claude-sidebar-ide] /notify body:", body);
             const type = data.type || "notification";
             const notificationType = data.notification_type || null;
             const message = data.message || null;
