@@ -199,6 +199,28 @@ export default class VaultTerminalPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "next-claude-session",
+      name: "Next Claude Session",
+      checkCallback: (checking) => {
+        const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
+        if (count < 2) return false;
+        if (!checking) this.cycleClaudeSession(1);
+        return true;
+      },
+    });
+
+    this.addCommand({
+      id: "previous-claude-session",
+      name: "Previous Claude Session",
+      checkCallback: (checking) => {
+        const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
+        if (count < 2) return false;
+        if (!checking) this.cycleClaudeSession(-1);
+        return true;
+      },
+    });
+
+    this.addCommand({
       id: "send-file-to-claude",
       name: "Send File Path to Claude",
       checkCallback: (checking) => {
@@ -612,6 +634,21 @@ export default class VaultTerminalPlugin extends Plugin {
       view.term.focus();
     }
     return true;
+  }
+
+  /** Cycle the focused Claude tab forward (delta=1) or backward (delta=-1).
+   *  Triggers active-leaf-change → switchSession → main-area swap → focus
+   *  restored to the new tab's xterm. Hotkey-bindable via Settings → Hotkeys. */
+  private cycleClaudeSession(delta: 1 | -1): void {
+    const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+    if (leaves.length < 2) return;
+    const currentIdx = leaves.findIndex(
+      (l) => l.view instanceof TerminalView && l.view.sessionId === this.activeSessionId,
+    );
+    const start = currentIdx >= 0 ? currentIdx : 0;
+    const next = (start + delta + leaves.length) % leaves.length;
+    const target = leaves[next];
+    if (target) this.app.workspace.setActiveLeaf(target, { focus: true });
   }
 
   // ─── Session Groups ────────────────────────────────────────────────────────
