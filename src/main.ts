@@ -74,10 +74,13 @@ export default class VaultTerminalPlugin extends Plugin {
           const view = leaf.view;
           const id = view.sessionId;
           if (id && id !== this.activeSessionId) {
+            // switchSession owns focus restoration at the end, so it wins
+            // any race against restoreSession's setActiveLeaf into main.
             void this.switchSession(id);
+          } else {
+            // No session change — just direct keystrokes into xterm.
+            setTimeout(() => view.term?.focus(), 0);
           }
-          // Defer one tick to let Obsidian finish settling the leaf before xterm grabs focus.
-          setTimeout(() => view.term?.focus(), 0);
         } else if (leaf.getRoot() === this.app.workspace.rootSplit) {
           this.snapshotDebounced?.();
         }
@@ -740,6 +743,19 @@ export default class VaultTerminalPlugin extends Plugin {
       }
       this.activeSessionId = newId;
       await this.saveData(this.pluginData);
+
+      // restoreSession sets the visible tab in main via setActiveLeaf, which
+      // moves keyboard focus to the editor. Pull it back so the user lands on
+      // the Claude tab they just switched to and Ctrl+Tab keeps cycling
+      // sessions instead of cycling main-area .md files.
+      const newLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE).find(
+        (l) => l.view instanceof TerminalView && l.view.sessionId === newId,
+      );
+      if (newLeaf) {
+        this.app.workspace.setActiveLeaf(newLeaf, { focus: true });
+        const view = newLeaf.view;
+        if (view instanceof TerminalView) view.term?.focus();
+      }
     } catch (err) {
       console.warn("[claude-sidebar-ide] switchSession failed:", err);
     } finally {
