@@ -27,6 +27,8 @@ export class TerminalView extends ItemView {
   private workingDir: string | null = null;
   private yoloMode = false;
   private continueSession = false;
+  /** Stable id used by the session-groups feature. Public so main.ts can read/seed it. */
+  sessionId: string | null = null;
   private _shouldAutoScroll = true;
 
   constructor(leaf: WorkspaceLeaf, plugin: VaultTerminalPlugin) {
@@ -68,6 +70,9 @@ export class TerminalView extends ItemView {
     if (state?.continueSession) {
       this.continueSession = state.continueSession as boolean;
     }
+    if (typeof state?.sessionId === "string") {
+      this.sessionId = state.sessionId;
+    }
     // If shell already started, restart with new settings
     if (this.shell.isRunning && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
       this.startShell(this.workingDir, this.yoloMode, this.continueSession);
@@ -78,6 +83,7 @@ export class TerminalView extends ItemView {
     const state: Record<string, unknown> = {};
     if (this.workingDir) state.workingDir = this.workingDir;
     if (this.yoloMode) state.yoloMode = this.yoloMode;
+    if (this.sessionId) state.sessionId = this.sessionId;
     // Auto-resume: persist if shell was running and setting is enabled
     if (this.shell.isRunning && this.plugin.pluginData.autoResume !== false) {
       state.continueSession = true;

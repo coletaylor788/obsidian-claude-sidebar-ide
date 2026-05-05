@@ -8,7 +8,8 @@
     "build": "bun run esbuild.config.ts --prod",
     "deploy": "bun run build && bun run deploy.ts",
     "typecheck": "tsc --noEmit",
-    "check": "tsc --noEmit && bun run build"
+    "test": "bun test",
+    "check": "tsc --noEmit && bun test && bun run build"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

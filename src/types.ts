@@ -1,3 +1,5 @@
+import type { SessionGroups } from "./session-groups";
+
 export interface PluginData {
   cliBackend?: string;
   defaultWorkingDir?: string | null;
@@ -6,6 +8,8 @@ export interface PluginData {
   runtimeMode?: 'local' | 'sprites';
   spritesApiToken?: string | null;
   autoResume?: boolean;
+  /** Per-Claude-session main-area layout snapshots, keyed by stable sessionId. */
+  sessionGroups?: SessionGroups;
 }
 
 export interface Backend {

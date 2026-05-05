@@ -1,4 +1,4 @@
-import { Plugin, WorkspaceLeaf, Menu, TFolder, Notice, Platform } from "obsidian";
+import { Plugin, WorkspaceLeaf, Menu, TFile, TFolder, Notice, Platform } from "obsidian";
 import { TerminalView, VIEW_TYPE } from "./terminal-view";
 import { ClaudeSidebarSettingsTab } from "./settings";
 import { CLI_BACKENDS } from "./backends";
@@ -6,6 +6,12 @@ import { SpriteManager } from "./sprite-manager";
 import { SpritesSetupModal } from "./setup-modal";
 import type { IShellManager } from "./shell-interface";
 import type { PluginData, Backend } from "./types";
+import {
+  debounce,
+  generateSessionId,
+  pruneSessionGroups,
+  type SessionGroup,
+} from "./session-groups";
 
 // Type-only imports for modules that depend on Node.js built-ins.
 // Actual modules are lazy-loaded via require() to avoid crashing on mobile.
@@ -21,6 +27,12 @@ export default class VaultTerminalPlugin extends Plugin {
   remoteIdeClient: RemoteIdeClient | null = null;
   private lastActiveTerminalLeaf: WorkspaceLeaf | null = null;
   private lastRibbonClick = 0;
+  /** Most-recently-focused Claude session id. Drives auto-collect + swap. */
+  private activeSessionId: string | null = null;
+  /** True while we are restoring a layout — suppresses auto-collect feedback. */
+  private swapping = false;
+  /** Debounced snapshot of the current main-area layout into the active session. */
+  private snapshotDebounced: ReturnType<typeof debounce<[]>> | null = null;
 
   async onload() {
     this.pluginData = await this.loadData() || {};
@@ -45,6 +57,35 @@ export default class VaultTerminalPlugin extends Plugin {
         if (leaf && leaf.view instanceof TerminalView) {
           this.lastActiveTerminalLeaf = leaf;
         }
+      })
+    );
+
+    // Session groups: assign sessionIds to existing tabs, then wire swap + auto-collect.
+    this.snapshotDebounced = debounce(() => this.captureActiveSnapshot(), 400);
+    this.app.workspace.onLayoutReady(() => this.initSessionGroups());
+
+    // Swap main-area layout when the focused Claude session changes.
+    this.registerEvent(
+      this.app.workspace.on("active-leaf-change", (leaf) => {
+        if (this.swapping || !leaf) return;
+        if (leaf.view instanceof TerminalView) {
+          const id = leaf.view.sessionId;
+          if (id && id !== this.activeSessionId) {
+            void this.switchSession(id);
+          }
+        } else if (leaf.getRoot() === this.app.workspace.rootSplit) {
+          this.snapshotDebounced?.();
+        }
+      })
+    );
+
+    // Catch splits / tab moves / file opens that don't trip active-leaf-change.
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        if (this.swapping) return;
+        this.dedupeSessionIds();
+        this.snapshotDebounced?.();
+        this.pruneStaleGroups();
       })
     );
 
@@ -486,20 +527,32 @@ export default class VaultTerminalPlugin extends Plugin {
         ? existing[0]
         : this.app.workspace.createLeafInParent(this.app.workspace.rootSplit, 0);
     } else {
-      const existing = this.app.workspace.getLeavesOfType(VIEW_TYPE)
-        .filter(l => l.getRoot() === this.app.workspace.rightSplit);
-      leaf = existing.length > 0 ? existing[0] : this.app.workspace.getRightLeaf(false)!;
+      // Always spin up a fresh leaf so multi-tab actually works. The previous
+      // logic reused the first existing Claude leaf, which broke the multi-tab
+      // spawn UX and made the session-groups feature confused about identity.
+      leaf = this.app.workspace.getRightLeaf(true)!;
     }
     if (leaf) {
       const state: Record<string, unknown> = {};
       if (workingDir) state.workingDir = workingDir;
       if (yoloMode) state.yoloMode = yoloMode;
       if (continueSession) state.continueSession = continueSession;
+      // Reuse existing sessionId if this leaf already had one (re-init case);
+      // otherwise mint a fresh one so the session-groups feature can track it.
+      const existingId = (leaf.view instanceof TerminalView ? leaf.view.sessionId : null);
+      const sessionId = existingId || generateSessionId();
+      state.sessionId = sessionId;
       await leaf.setViewState({
         type: VIEW_TYPE,
         active: true,
         state,
       });
+      // setViewState replaces the view; re-read and stamp the id explicitly so it
+      // is available immediately to the active-leaf-change listener that will fire.
+      if (leaf.view instanceof TerminalView) {
+        leaf.view.sessionId = sessionId;
+      }
+      this.activeSessionId = sessionId;
       this.app.workspace.revealLeaf(leaf);
       // Focus the terminal after the leaf is revealed
       setTimeout(() => {
@@ -549,5 +602,203 @@ export default class VaultTerminalPlugin extends Plugin {
       view.term.focus();
     }
     return true;
+  }
+
+  // ─── Session Groups ────────────────────────────────────────────────────────
+
+  /**
+   * Called once on layout-ready. Assigns a stable id to any pre-existing Claude
+   * tab that has none (BRAT-installed or pre-feature data), then seeds
+   * activeSessionId from the most-recently-focused tab.
+   */
+  private initSessionGroups(): void {
+    const claudeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+    for (const leaf of claudeLeaves) {
+      if (!(leaf.view instanceof TerminalView)) continue;
+      if (!leaf.view.sessionId) {
+        // In-memory only — Obsidian's next workspace save will pick it up via
+        // getState(). Calling setViewState() here would re-trigger setState()
+        // on the live TerminalView and restart the running shell.
+        leaf.view.sessionId = generateSessionId();
+      }
+    }
+    const focused = this.app.workspace.getActiveViewOfType(TerminalView);
+    if (focused?.sessionId) {
+      this.activeSessionId = focused.sessionId;
+    } else if (claudeLeaves[0]?.view instanceof TerminalView) {
+      this.activeSessionId = claudeLeaves[0].view.sessionId;
+    }
+    this.pruneStaleGroups();
+  }
+
+  /**
+   * Walk main-area leaves and collect (vault-relative) file paths for the
+   * notes currently open. Skips empty leaves, search/graph views, and any
+   * non-file content.
+   */
+  private collectMainFiles(): { files: string[]; activeFile: string | null } {
+    const files: string[] = [];
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      const file = (leaf.view as { file?: { path?: string } } | undefined)?.file;
+      if (file?.path) files.push(file.path);
+    });
+    const af = this.app.workspace.getActiveFile();
+    const activeFile = af && files.includes(af.path) ? af.path : null;
+    return { files, activeFile };
+  }
+
+  /** Save the current main-area files into the given session's group. */
+  private captureToSession(sessionId: string): void {
+    const { files, activeFile } = this.collectMainFiles();
+    if (!this.pluginData.sessionGroups) this.pluginData.sessionGroups = {};
+    this.pluginData.sessionGroups[sessionId] = {
+      files,
+      activeFile,
+      lastUpdated: Date.now(),
+    };
+    void this.saveData(this.pluginData);
+  }
+
+  /** Snapshot current main-area files into the active session's group. */
+  private captureActiveSnapshot(): void {
+    if (this.swapping || !this.activeSessionId) return;
+    this.captureToSession(this.activeSessionId);
+  }
+
+  /**
+   * Replace the main area with the files from the given session's group.
+   *
+   * Strategy: open all target files first (Obsidian's openLinkText handles
+   * focusing existing leaves vs creating new ones). Then walk main and
+   * reconcile by file path — keep exactly one leaf per target file, detach
+   * everything else. Tracking by leaf object reference proved unreliable
+   * because Obsidian recycles leaves across openLinkText calls.
+   */
+  private async restoreSession(group: SessionGroup): Promise<void> {
+    // Resolve target file paths to TFile refs; skip missing.
+    const targetFiles: TFile[] = [];
+    for (const filePath of group.files) {
+      const f = this.app.vault.getAbstractFileByPath(filePath);
+      if (f instanceof TFile) targetFiles.push(f);
+    }
+
+    if (targetFiles.length === 0) {
+      // Saved group is intentionally empty — clear main.
+      const toDetach: WorkspaceLeaf[] = [];
+      this.app.workspace.iterateRootLeaves((leaf) => toDetach.push(leaf));
+      for (const leaf of toDetach) leaf.detach();
+      return;
+    }
+
+    // Open every target file. This may create new tabs or focus existing leaves
+    // displaying the same file. Either way, after this loop main contains at
+    // least one leaf per target file (plus possibly leftover leaves from before).
+    for (const file of targetFiles) {
+      await this.app.workspace.openLinkText(file.path, "", "tab", { active: false });
+    }
+
+    // Reconcile: keep exactly one leaf per target file, detach everything else.
+    const targetPaths = new Set(targetFiles.map((f) => f.path));
+    const kept = new Set<string>();
+    const toDetach: WorkspaceLeaf[] = [];
+    let activeLeaf: WorkspaceLeaf | null = null;
+    this.app.workspace.iterateRootLeaves((leaf) => {
+      const path = (leaf.view as { file?: { path?: string } } | undefined)?.file?.path;
+      if (!path || !targetPaths.has(path) || kept.has(path)) {
+        toDetach.push(leaf);
+        return;
+      }
+      kept.add(path);
+      if (path === group.activeFile) activeLeaf = leaf;
+    });
+    for (const leaf of toDetach) leaf.detach();
+
+    if (activeLeaf) this.app.workspace.setActiveLeaf(activeLeaf, { focus: false });
+  }
+
+  /**
+   * Capture the outgoing session's files, then rebuild the main area from the
+   * incoming session's files. If the incoming session has no saved group,
+   * leave the main area as-is (first switch becomes the seed for that group).
+   */
+  private async switchSession(newId: string): Promise<void> {
+    if (this.swapping) return;
+    this.swapping = true;
+    try {
+      this.snapshotDebounced?.cancel();
+      if (this.activeSessionId && this.activeSessionId !== newId) {
+        this.captureToSession(this.activeSessionId);
+      }
+      const incoming = this.pluginData.sessionGroups?.[newId];
+      if (incoming) {
+        await this.restoreSession(incoming);
+      }
+      this.activeSessionId = newId;
+      await this.saveData(this.pluginData);
+    } catch (err) {
+      console.warn("[claude-sidebar-ide] switchSession failed:", err);
+    } finally {
+      this.swapping = false;
+    }
+  }
+
+  /**
+   * Obsidian's "split" duplicates a view's state onto the new leaf, including
+   * our sessionId. Walk Claude leaves; the first occurrence of each id keeps
+   * it, any duplicate gets a fresh id.
+   *
+   * When a fresh id is minted (a split-cloned session is now distinct), we
+   * also snap activeSessionId to it. Reason: after a split, focus typically
+   * lands on an empty leaf in the new pane, NOT on the new Claude tab — so
+   * `active-leaf-change` won't fire for the new session. Without this snap,
+   * subsequent file opens would keep capturing into the OLD session,
+   * overwriting its state with what the user thinks is "the new session's"
+   * content. Capture the outgoing state first so it survives.
+   */
+  private dedupeSessionIds(): void {
+    const seen = new Set<string>();
+    let newestId: string | null = null;
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (!(leaf.view instanceof TerminalView)) continue;
+      const id = leaf.view.sessionId;
+      if (!id) {
+        leaf.view.sessionId = generateSessionId();
+        seen.add(leaf.view.sessionId);
+        newestId = leaf.view.sessionId;
+      } else if (seen.has(id)) {
+        leaf.view.sessionId = generateSessionId();
+        seen.add(leaf.view.sessionId);
+        newestId = leaf.view.sessionId;
+      } else {
+        seen.add(id);
+      }
+    }
+    if (newestId) {
+      // Capture outgoing first so its state isn't lost.
+      if (this.activeSessionId && this.activeSessionId !== newestId) {
+        this.captureToSession(this.activeSessionId);
+      }
+      this.activeSessionId = newestId;
+    }
+  }
+
+  /** Drop session-group entries whose Claude tab no longer exists. */
+  private pruneStaleGroups(): void {
+    const liveIds: string[] = [];
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      if (leaf.view instanceof TerminalView && leaf.view.sessionId) {
+        liveIds.push(leaf.view.sessionId);
+      }
+    }
+    const before = this.pluginData.sessionGroups;
+    const after = pruneSessionGroups(before, liveIds);
+    if (before && Object.keys(before).length !== Object.keys(after).length) {
+      this.pluginData.sessionGroups = after;
+      void this.saveData(this.pluginData);
+    }
+    // If the active session was closed, blank it so a future switch fires cleanly.
+    if (this.activeSessionId && !liveIds.includes(this.activeSessionId)) {
+      this.activeSessionId = liveIds[0] ?? null;
+    }
   }
 }

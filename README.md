@@ -2,9 +2,20 @@
 
 Run Claude Code (and other AI coding CLIs) directly in your Obsidian sidebar — on desktop or mobile — with full IDE integration so Claude automatically knows what you're working on.
 
-**Forked from [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar) by Derek Larson.**
+**Forked from [obsidian-claude-sidebar-ide](https://github.com/MatthewHallCom/obsidian-claude-sidebar-ide) by Matthew Hall, which itself forks [obsidian-claude-sidebar](https://github.com/derek-larson14/obsidian-claude-sidebar) by Derek Larson.**
 
-## What's Different From the Original
+## What's New In This Fork
+
+This fork adds **session-bound tab groups**. Each Claude session in the sidebar now keeps its own set of open notes in the main editor. Switching to a different Claude tab swaps the main editor over to that session's notes; switching back restores the previous set. Notes are auto-collected into whichever session is currently active, so there's no manual binding step.
+
+Implementation notes:
+- Each Claude tab gets a stable `sessionId` (UUID) persisted via the leaf's view state.
+- Session → file-list mapping lives on `pluginData.sessionGroups` and survives Obsidian restarts.
+- Splitting a Claude tab is detected via id collision; the new session inherits the current main as its starting state, then captures changes independently.
+- Pure helpers (`generateSessionId`, `pruneSessionGroups`, `debounce`) are unit-tested with `bun test` — `bun run check` runs typecheck → tests → build.
+- See `src/session-groups.ts` and the `// ─── Session Groups ───` block in `src/main.ts`.
+
+## What MatthewHallCom's Fork Adds Over The Original
 
 The original plugin embeds a terminal in your Obsidian sidebar and lets you run Claude Code. This fork adds **IDE integration** — the same protocol that VS Code, Neovim, and JetBrains use to give Claude automatic awareness of your editor state.
 
