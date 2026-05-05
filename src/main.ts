@@ -62,7 +62,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     // Session groups: assign sessionIds to existing tabs, then wire swap + auto-collect.
     this.snapshotDebounced = debounce(() => this.captureActiveSnapshot(), 400);
-    this.app.workspace.onLayoutReady(() => this.initSessionGroups());
+    this.app.workspace.onLayoutReady(() => void this.initSessionGroups());
 
     // Swap main-area layout when the focused Claude session changes;
     // also direct keystrokes into the xterm element so Ctrl+Tab and tab-header
@@ -619,24 +619,47 @@ export default class VaultTerminalPlugin extends Plugin {
    * tab that has none (BRAT-installed or pre-feature data), then seeds
    * activeSessionId from the most-recently-focused tab.
    */
-  private initSessionGroups(): void {
-    const claudeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
-    for (const leaf of claudeLeaves) {
-      if (!(leaf.view instanceof TerminalView)) continue;
-      if (!leaf.view.sessionId) {
-        // In-memory only — Obsidian's next workspace save will pick it up via
-        // getState(). Calling setViewState() here would re-trigger setState()
-        // on the live TerminalView and restart the running shell.
-        leaf.view.sessionId = generateSessionId();
+  private async initSessionGroups(): Promise<void> {
+    // Wrap the entire init in `swapping` so any active-leaf-change /
+    // layout-change events that fire during workspace restore can't trigger
+    // an auto-capture before we sync main with the active session's saved
+    // state. Without this, the user's previous session-group data gets
+    // overwritten by whatever Obsidian's main split happens to be holding
+    // at reload time.
+    this.swapping = true;
+    try {
+      const claudeLeaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
+      for (const leaf of claudeLeaves) {
+        if (!(leaf.view instanceof TerminalView)) continue;
+        if (!leaf.view.sessionId) {
+          // In-memory only — Obsidian's next workspace save will pick it up
+          // via getState(). Calling setViewState() here would re-trigger
+          // setState() on the live TerminalView and restart the running shell.
+          leaf.view.sessionId = generateSessionId();
+        }
       }
+      const focused = this.app.workspace.getActiveViewOfType(TerminalView);
+      if (focused?.sessionId) {
+        this.activeSessionId = focused.sessionId;
+      } else if (claudeLeaves[0]?.view instanceof TerminalView) {
+        this.activeSessionId = claudeLeaves[0].view.sessionId;
+      }
+
+      // Sync main with the active session's saved group so the first user
+      // action doesn't destructively capture stale workspace state into it.
+      if (this.activeSessionId) {
+        const group = this.pluginData.sessionGroups?.[this.activeSessionId];
+        if (group) {
+          await this.restoreSession(group);
+        }
+      }
+
+      this.pruneStaleGroups();
+    } catch (err) {
+      console.warn("[claude-sidebar-ide] initSessionGroups failed:", err);
+    } finally {
+      this.swapping = false;
     }
-    const focused = this.app.workspace.getActiveViewOfType(TerminalView);
-    if (focused?.sessionId) {
-      this.activeSessionId = focused.sessionId;
-    } else if (claudeLeaves[0]?.view instanceof TerminalView) {
-      this.activeSessionId = claudeLeaves[0].view.sessionId;
-    }
-    this.pruneStaleGroups();
   }
 
   /**
