@@ -78,12 +78,11 @@ export default class VaultTerminalPlugin extends Plugin {
         if (leaf.view instanceof TerminalView) {
           const view = leaf.view;
           const id = view.sessionId;
+          console.log("[claude-sidebar-ide] leaf-change to claude tab id=%s active=%s",
+            id?.slice(0, 8), this.activeSessionId?.slice(0, 8));
           if (id && id !== this.activeSessionId) {
-            // switchSession owns focus restoration at the end, so it wins
-            // any race against restoreSession's setActiveLeaf into main.
             void this.switchSession(id);
           } else {
-            // No session change — just direct keystrokes into xterm.
             setTimeout(() => view.term?.focus(), 0);
           }
         } else if (leaf.getRoot() === this.app.workspace.rootSplit) {
@@ -731,10 +730,14 @@ export default class VaultTerminalPlugin extends Plugin {
   private async restoreSession(group: SessionGroup): Promise<void> {
     // Resolve target file paths to TFile refs; skip missing.
     const targetFiles: TFile[] = [];
+    const missing: string[] = [];
     for (const filePath of group.files) {
       const f = this.app.vault.getAbstractFileByPath(filePath);
       if (f instanceof TFile) targetFiles.push(f);
+      else missing.push(filePath);
     }
+    console.log("[claude-sidebar-ide]   restoreSession resolved=%d missing=%o",
+      targetFiles.length, missing);
 
     if (targetFiles.length === 0) {
       // Saved group is intentionally empty — clear main.
@@ -777,6 +780,8 @@ export default class VaultTerminalPlugin extends Plugin {
    */
   private async switchSession(newId: string): Promise<void> {
     if (this.swapping) return;
+    console.log("[claude-sidebar-ide] switchSession %s -> %s",
+      this.activeSessionId?.slice(0, 8), newId.slice(0, 8));
     this.swapping = true;
     try {
       this.snapshotDebounced?.cancel();
@@ -784,8 +789,10 @@ export default class VaultTerminalPlugin extends Plugin {
         this.captureToSession(this.activeSessionId);
       }
       const incoming = this.pluginData.sessionGroups?.[newId];
+      console.log("[claude-sidebar-ide]   incoming=%o", incoming?.files);
       if (incoming) {
         await this.restoreSession(incoming);
+        console.log("[claude-sidebar-ide]   restoreSession returned");
       }
       this.setActiveSession(newId);
       await this.saveData(this.pluginData);
