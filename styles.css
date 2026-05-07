@@ -134,6 +134,19 @@
 	50%      { opacity: 1;    transform: scale(1.12); }
 }
 
+/* Keep editor selection visible after focus moves to a Claude tab.
+ * CodeMirror 6 only renders .cm-selectionBackground while the editor has
+ * .cm-focused; without this rule, your highlight visually vanishes the
+ * moment you click into a Claude terminal — even though the selection
+ * state itself is preserved (and is what gets sent to claude). We render
+ * it at slightly lower opacity than the focused selection so the focus
+ * shift is still apparent.
+ */
+.cm-editor:not(.cm-focused) .cm-selectionBackground {
+	background-color: var(--text-selection);
+	opacity: 0.55;
+}
+
 /* IME support: keep textarea positioned near cursor for input method candidate window */
 .vault-terminal-host .xterm .xterm-helper-textarea {
 	/* Allow xterm.js to position the textarea for IME support */
