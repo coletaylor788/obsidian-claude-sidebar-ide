@@ -1,3 +1,19 @@
 {
-  "lastCwd": "/Users/matt/Documents/AI Consulting"
+  "lastCwd": "/Users/cotaylor/.claude",
+  "sessionGroups": {
+    "0a39151c-709d-4044-bede-ee11aeaf6053": {
+      "files": [
+        "context/skills/todo/coaching.md"
+      ],
+      "activeFile": "context/skills/todo/coaching.md",
+      "lastUpdated": 1778000853372
+    },
+    "2ba797ac-5681-4bca-a177-bb06bfa4d4af": {
+      "files": [
+        "context/skills/todo/todo.md"
+      ],
+      "activeFile": "context/skills/todo/todo.md",
+      "lastUpdated": 1778000852553
+    }
+  }
 }

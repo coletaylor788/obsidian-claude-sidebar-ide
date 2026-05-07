@@ -11,7 +11,15 @@ const winPtyB64 = readFileSync("src/terminal_win.py").toString("base64");
 const ctx = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
-  external: ["obsidian", "electron", ...builtinModules],
+  external: [
+    "obsidian",
+    "electron",
+    // CodeMirror is bundled with Obsidian at runtime; keep it external so
+    // we don't ship a duplicate copy.
+    "@codemirror/view",
+    "@codemirror/state",
+    ...builtinModules,
+  ],
   format: "cjs",
   target: "es2021",
   outfile: "main.js",

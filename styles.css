@@ -135,14 +135,12 @@
 }
 
 /* Keep editor selection visible after focus moves to a Claude tab.
- * CodeMirror 6 only renders .cm-selectionBackground while the editor has
- * .cm-focused; without this rule, your highlight visually vanishes the
- * moment you click into a Claude terminal — even though the selection
- * state itself is preserved (and is what gets sent to claude). We render
- * it at slightly lower opacity than the focused selection so the focus
- * shift is still apparent.
+ * CodeMirror 6's drawSelection removes .cm-selectionBackground from the DOM
+ * on blur, so this is painted by a custom decoration registered by the
+ * persistent-selection.ts CodeMirror extension. We render it at lower
+ * opacity than the focused selection so the focus shift is still apparent.
  */
-.cm-editor:not(.cm-focused) .cm-selectionBackground {
+.vault-terminal-persistent-selection {
 	background-color: var(--text-selection);
 	opacity: 0.55;
 }

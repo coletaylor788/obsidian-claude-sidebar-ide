@@ -12,6 +12,7 @@ import {
   pruneSessionGroups,
   type SessionGroup,
 } from "./session-groups";
+import { persistentSelectionExtension } from "./persistent-selection";
 
 // Type-only imports for modules that depend on Node.js built-ins.
 // Actual modules are lazy-loaded via require() to avoid crashing on mobile.
@@ -44,6 +45,9 @@ export default class VaultTerminalPlugin extends Plugin {
     this.lastActiveTerminalLeaf = null;
 
     this.registerView(VIEW_TYPE, (leaf) => new TerminalView(leaf, this));
+
+    // Keep editor selection visible after focus moves to a Claude tab.
+    this.registerEditorExtension(persistentSelectionExtension);
 
     // On mobile, migrate any sidebar leaves to full-width tabs after layout restores
     if (Platform.isMobile) {
