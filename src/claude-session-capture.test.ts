@@ -30,6 +30,26 @@ describe("encodeCwdForClaudeProjectDir", () => {
     expect(encodeCwdForClaudeProjectDir("/Users/cotaylor/Library/CloudStorage/OneDrive-Microsoft/claude/context"))
       .toBe("-Users-cotaylor-Library-CloudStorage-OneDrive-Microsoft-claude-context");
   });
+  test("non-alphanumeric chars (~, _, etc.) all map to dashes", () => {
+    // Real-world bug: a literal '~' segment in a cwd. Claude encodes it as
+    // '-' just like any other non-alphanumeric. The previous regex only
+    // replaced '/' and '.', leaving '~' intact and producing the wrong dir.
+    expect(encodeCwdForClaudeProjectDir("/Users/cole/git/puddles/docs/~/git/puddles"))
+      .toBe("-Users-cole-git-puddles-docs---git-puddles");
+    expect(encodeCwdForClaudeProjectDir("/tmp/my_project"))
+      .toBe("-tmp-my-project");
+    expect(encodeCwdForClaudeProjectDir("/x/a b c"))
+      .toBe("-x-a-b-c");
+  });
+  test("paths longer than 200 chars are truncated and hash-suffixed", () => {
+    const longSeg = "a".repeat(250);
+    const input = `/${longSeg}`;
+    const out = encodeCwdForClaudeProjectDir(input);
+    // 200-char prefix, then "-", then a base36 hash.
+    expect(out.length).toBeLessThanOrEqual(200 + 1 + 8);
+    expect(out.startsWith("-" + "a".repeat(199))).toBe(true);
+    expect(out).toMatch(/-[0-9a-z]+$/);
+  });
 });
 
 describe("expandHome", () => {

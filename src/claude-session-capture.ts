@@ -25,30 +25,46 @@ export interface ClaudeProjectFile {
 }
 
 /**
- * Replicate Claude's cwd-to-projects-dir encoding. Observed convention:
- *   /Users/cotaylor/git/AgentInbox  →  -Users-cotaylor-git-AgentInbox
- *   /Users/cotaylor/.claude         →  -Users-cotaylor--claude   (dots also map to `-`)
- * Replace every `/` and every `.` with `-`. A leading slash naturally
- * produces a leading dash.
+ * Replicate Claude's cwd-to-projects-dir encoding. Claude replaces every
+ * non-alphanumeric character with `-`, then truncates to 200 chars and
+ * appends a hash suffix if the result is longer.
+ *
+ *   /Users/cotaylor/git/AgentInbox      →  -Users-cotaylor-git-AgentInbox
+ *   /Users/cotaylor/.claude             →  -Users-cotaylor--claude
+ *   /Users/cole/git/puddles/docs/~/git  →  -Users-cole-git-puddles-docs---git
  *
  * NOTE: This function does NOT resolve symlinks — call realpath first if the
  * cwd may include symlinked path segments (Claude itself resolves real paths
  * before encoding, so the resulting dir would otherwise mismatch).
  */
+const MAX_PROJECT_DIR_LEN = 200;
+
+function projectDirHashSuffix(s: string): string {
+  // djb2-style 32-bit hash, base36 — matches Claude's `rEH` impl.
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
+}
+
 export function encodeCwdForClaudeProjectDir(cwd: string): string {
   const normalized = cwd.replace(/\/+/g, "/").replace(/\/$/, "");
-  return normalized.replace(/[/.]/g, "-");
+  const encoded = normalized.replace(/[^a-zA-Z0-9]/g, "-");
+  if (encoded.length <= MAX_PROJECT_DIR_LEN) return encoded;
+  return `${encoded.slice(0, MAX_PROJECT_DIR_LEN)}-${projectDirHashSuffix(normalized)}`;
 }
 
 /**
- * Resolve symlinks to the real path. Returns the input unchanged on failure.
- * Used before encoding so the produced dir name matches what Claude creates.
+ * Resolve symlinks to the real path and NFC-normalize. Returns the input
+ * (NFC-normalized) on failure. Matches Claude's pre-encoding step so the
+ * produced dir name lines up with what Claude creates.
  */
 export function resolveRealPath(cwd: string): string {
   try {
-    return fs.realpathSync(cwd);
+    return fs.realpathSync(cwd).normalize("NFC");
   } catch {
-    return cwd;
+    return cwd.normalize("NFC");
   }
 }
 
