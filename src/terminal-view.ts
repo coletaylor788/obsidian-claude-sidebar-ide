@@ -44,6 +44,10 @@ export class TerminalView extends ItemView {
    *  is waiting on you." Cleared when the user focuses the tab. */
   private needsAttention = false;
   private _shouldAutoScroll = true;
+  /** Set true immediately before we call term.scrollToBottom() ourselves, so
+   *  the 'scroll' listener can distinguish our own programmatic scroll from a
+   *  real user gesture. Cleared in the next scroll event. */
+  private _programmaticScroll = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: VaultTerminalPlugin) {
     super(leaf);
@@ -614,21 +618,41 @@ export class TerminalView extends ItemView {
     this.resizeObserver = new ResizeObserver(() => this.debouncedFit());
     this.resizeObserver.observe(this.termHost);
 
-    // Track user scroll intent — only explicit user gestures (wheel/touch)
-    // mark the terminal as "scrolled up". This avoids the fragile per-write
-    // baseY===viewportY check which can fail during rapid output.
+    // Track user scroll intent.
+    //
+    // Previous approach (rAF after wheel/touch) raced with stream writes:
+    // a wheel-up would queue an rAF, but the next onStdout's write-callback
+    // fired scrollToBottom() *before* that rAF ran, cancelling the user's
+    // gesture and re-asserting "at bottom".
+    //
+    // Fix: disengage SYNCHRONOUSLY on any upward gesture (wheel/touch).
+    // Re-engage only when the user explicitly returns to the bottom — via a
+    // scrollbar drag, downward wheel, or keyboard nav — detected by the
+    // 'scroll' listener. The _programmaticScroll guard prevents our own
+    // scrollToBottom() calls from being misread as user "at bottom" intent.
     const viewportEl = this.termHost?.querySelector('.xterm-viewport') as HTMLElement | null;
     if (viewportEl) {
-      const updateScrollIntent = () => {
-        requestAnimationFrame(() => {
-          if (this.term) {
-            const buf = this.term.buffer.active;
-            this._shouldAutoScroll = buf.baseY <= buf.viewportY;
-          }
-        });
-      };
-      viewportEl.addEventListener('wheel', updateScrollIntent, { passive: true });
-      viewportEl.addEventListener('touchmove', updateScrollIntent, { passive: true });
+      viewportEl.addEventListener('wheel', (e: WheelEvent) => {
+        if (e.deltaY < 0) {
+          this._shouldAutoScroll = false;
+        }
+      }, { passive: true });
+
+      viewportEl.addEventListener('touchmove', () => {
+        // Touch direction isn't reliably available; any touchmove disengages.
+        // The 'scroll' listener re-engages if the touch ends at the bottom.
+        this._shouldAutoScroll = false;
+      }, { passive: true });
+
+      viewportEl.addEventListener('scroll', () => {
+        if (this._programmaticScroll) {
+          this._programmaticScroll = false;
+          return;
+        }
+        const atBottom =
+          viewportEl.scrollHeight - viewportEl.scrollTop - viewportEl.clientHeight < 2;
+        this._shouldAutoScroll = atBottom;
+      }, { passive: true });
     }
 
     // Watch for theme changes
@@ -639,13 +663,21 @@ export class TerminalView extends ItemView {
     this.registerEvent(this.app.workspace.on("layout-change", () => this.debouncedFit()));
   }
 
+  /** Programmatically scroll to the bottom, marking the action so the scroll
+   *  listener can ignore it (so it doesn't incorrectly re-engage auto-scroll). */
+  private autoScrollToBottom(): void {
+    if (!this.term) return;
+    this._programmaticScroll = true;
+    this.term.scrollToBottom();
+  }
+
   fit(): void {
     if (!this.term || !this.fitAddon) return;
     try {
       this.fitAddon.fit();
       // Defer scroll correction to next frame so the reflow completes first
       if (this._shouldAutoScroll) {
-        requestAnimationFrame(() => this.term?.scrollToBottom());
+        requestAnimationFrame(() => this.autoScrollToBottom());
       }
     } catch (e) {}
   }
@@ -820,7 +852,7 @@ export class TerminalView extends ItemView {
           if (this.term) {
             this.term.write(text, () => {
               if (this._shouldAutoScroll) {
-                requestAnimationFrame(() => this.term?.scrollToBottom());
+                requestAnimationFrame(() => this.autoScrollToBottom());
               }
             });
           }
@@ -830,7 +862,7 @@ export class TerminalView extends ItemView {
           if (this.term) {
             this.term.write(text, () => {
               if (this._shouldAutoScroll) {
-                requestAnimationFrame(() => this.term?.scrollToBottom());
+                requestAnimationFrame(() => this.autoScrollToBottom());
               }
             });
           }
