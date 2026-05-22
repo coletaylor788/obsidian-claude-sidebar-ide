@@ -327,9 +327,13 @@ export class ShellManager implements IShellManager {
   /** Write Claude Code hook scripts + .claude/settings.local.json to the working directory. */
   static installHooks(cwd: string): string | null {
     try {
-      // Write hook scripts to temp dir
-      const notifyPath = path.join(os.tmpdir(), "claude_obsidian_notify.cjs");
-      const stopPath = path.join(os.tmpdir(), "claude_obsidian_stop.cjs");
+      // Write hook scripts to a stable user dir so they survive macOS tmp cleanups.
+      // (System tmp dir gets purged on reboot / by `tmpwatch`; scripts vanish but
+      // settings.local.json still references them, every Stop/Notification errors.)
+      const hookDir = path.join(os.homedir(), ".claude", "obsidian-sidebar");
+      fs.mkdirSync(hookDir, { recursive: true });
+      const notifyPath = path.join(hookDir, "notify.cjs");
+      const stopPath = path.join(hookDir, "stop.cjs");
       fs.writeFileSync(notifyPath, NOTIFY_HOOK_SCRIPT, { mode: 0o755 });
       fs.writeFileSync(stopPath, STOP_HOOK_SCRIPT, { mode: 0o755 });
 
@@ -369,6 +373,12 @@ export class ShellManager implements IShellManager {
   /** Remove Obsidian-managed hook entries from .claude/settings.local.json. */
   static uninstallHooks(settingsPath: string): void {
     try {
+      // Best-effort: also remove the persistent script files we installed.
+      const hookDir = path.join(os.homedir(), ".claude", "obsidian-sidebar");
+      try { fs.unlinkSync(path.join(hookDir, "notify.cjs")); } catch (_e) {}
+      try { fs.unlinkSync(path.join(hookDir, "stop.cjs")); } catch (_e) {}
+      try { fs.rmdirSync(hookDir); } catch (_e) {}
+
       if (!fs.existsSync(settingsPath)) return;
       const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
       const hooks = settings.hooks;
