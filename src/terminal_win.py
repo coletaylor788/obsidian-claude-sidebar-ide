@@ -11,6 +11,15 @@ import select
 RESIZE_RE = re.compile(rb'\x1b\]RESIZE;[0-9]+;[0-9]+\x07', re.IGNORECASE)
 FOCUS_IN_RE = re.compile(rb'\x1b\[I')
 FOCUS_OUT_RE = re.compile(rb'\x1b\[O')
+# Primary Device Attributes (DA1) request: ESC [ c or ESC [ 0 c. Recent
+# AI CLIs (claude.exe 2.1+, codex) emit this at startup and refuse to render
+# any UI until the host terminal answers. xterm.js does answer, but only
+# after it has mounted — leaving a race where the spawn hangs forever on
+# first sidebar open. We answer it from the bridge so the CLI proceeds
+# immediately, and strip the request from output so xterm.js doesn't also
+# reply (which would otherwise be injected as keystrokes into the CLI).
+DA_REQUEST_RE = re.compile(rb'\x1b\[0?c')
+DA_RESPONSE = b'\x1b[?1;2c'
 
 def read_utf8_char(buffer):
     """Read a complete UTF-8 character from buffer, handling multi-byte sequences."""
@@ -70,6 +79,11 @@ def main():
         pty = PTY(cols, rows)
         pty.spawn(shell)
 
+        # Pre-answer the DA1 query (see DA_REQUEST_RE comment above). Safe to
+        # send before the CLI asks: ConPTY buffers the input and the CLI
+        # consumes it as soon as it reads.
+        pty.write(DA_RESPONSE.decode('latin-1'))
+
         running = True
 
         def read_output():
@@ -84,6 +98,7 @@ def main():
                         output = RESIZE_RE.sub(b'', output)
                         output = FOCUS_IN_RE.sub(b'', output)
                         output = FOCUS_OUT_RE.sub(b'', output)
+                        output = DA_REQUEST_RE.sub(b'', output)
                         if output:
                             sys.stdout.buffer.write(output)
                             sys.stdout.buffer.flush()
