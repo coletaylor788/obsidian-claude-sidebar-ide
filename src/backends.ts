@@ -13,6 +13,17 @@ function readClaudeTitle(agentSessionId: string, cwd: string): string | null {
   }
 }
 
+/** Read Copilot's session title (`name` in workspace.yaml). Lazy-requires the
+ *  fs-backed helper so this stays safe to call on mobile. */
+function readCopilotTitle(agentSessionId: string, cwd: string): string | null {
+  try {
+    const m = require("./copilot-session");
+    return m.readCopilotSessionTitle(agentSessionId, cwd);
+  } catch {
+    return null;
+  }
+}
+
 export const CLI_BACKENDS: Record<string, Backend> = {
   claude: {
     label: "Claude Code",
@@ -29,6 +40,23 @@ export const CLI_BACKENDS: Record<string, Backend> = {
       `claude config set -g trustedDirectories '${cwd}' 2>/dev/null; `,
     installsHooks: true,
     readSessionTitle: readClaudeTitle,
+  },
+  copilot: {
+    label: "GitHub Copilot",
+    binary: "copilot",
+    pathHints: ["/opt/homebrew/bin", "~/.local/bin"],
+    yoloFlag: "--allow-all-tools",
+    resumeFlag: "--continue",
+    resumeIsSubcommand: false,
+    resumeByIdFlag: "--resume",
+    sessionIdFlag: "--session-id",
+    // IDE integration lands in a later phase (Copilot uses a different
+    // transport than Claude); keep it off until then.
+    supportsIde: false,
+    ideFlag: null,
+    sessionMode: "mint",
+    installsHooks: false,
+    readSessionTitle: readCopilotTitle,
   },
   codex: {
     label: "Codex",

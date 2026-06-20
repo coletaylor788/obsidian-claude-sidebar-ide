@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { IShellManager } from "./shell-interface";
 import { CLI_BACKENDS } from "./backends";
+import { generateSessionId } from "./session-groups";
 import type VaultTerminalPlugin from "./main";
 
 export const VIEW_TYPE = "vault-terminal";
@@ -827,6 +828,13 @@ export class TerminalView extends ItemView {
     this.plugin.saveData(this.plugin.pluginData);
 
     const isWindows = typeof process !== "undefined" && process.platform === "win32";
+
+    // Mint-mode backends (e.g. Copilot) get a stable per-tab session id up front
+    // so the spawn can create — and later resume — this exact conversation by id.
+    if (this.getBackend().sessionMode === "mint" && !this.agentSessionId) {
+      this.agentSessionId = generateSessionId();
+      this.app.workspace.requestSaveLayout();
+    }
 
     this.shell.start(
       {

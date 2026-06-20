@@ -209,9 +209,13 @@ export class ShellManager implements IShellManager {
     const additionalFlags = ShellManager.sanitizeFlags(this.pluginData.additionalFlags);
     if (additionalFlags) cliCmd += " " + additionalFlags;
     let baseCmd = cliCmd;
-    if (continueSession) {
+    if (backend.sessionMode === "mint" && agentSessionId && backend.sessionIdFlag) {
+      // Mint mode (e.g. Copilot): always pass the plugin-assigned UUID. On the
+      // first run it creates the session with that id; on reload it resumes it.
+      cliCmd += ` ${backend.sessionIdFlag} '${agentSessionId.replace(/'/g, "'\\''")}'`;
+    } else if (continueSession) {
       // Prefer resume-by-id when we have a specific conversation captured for
-      // this tab — keeps each tab's claude conversation distinct across reload.
+      // this tab — keeps each tab's conversation distinct across reload.
       // Fall back to the generic resumeFlag (e.g. --continue) otherwise.
       if (agentSessionId && backend.resumeByIdFlag) {
         // Shell-quote the id defensively even though UUIDs are safe.

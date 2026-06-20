@@ -30,6 +30,10 @@ export interface Backend {
    *  after this flag instead of using resumeFlag, so each tab persists its
    *  own conversation rather than collapsing onto the cwd's most-recent one. */
   resumeByIdFlag?: string | null;
+  /** Flag that SETS/uses a caller-provided session UUID (e.g. copilot
+   *  `--session-id`). For 'mint' backends the plugin always passes this with
+   *  the minted id — it creates the session on first run and resumes it after. */
+  sessionIdFlag?: string | null;
   /** Whether this agent supports the live IDE integration (selection/diff via
    *  the local MCP server + lock file). */
   supportsIde?: boolean;
