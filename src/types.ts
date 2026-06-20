@@ -52,8 +52,10 @@ export interface Backend {
   /** Optional shell prefix that pre-trusts the working directory so the agent
    *  doesn't prompt on first run (e.g. claude trustedDirectories). */
   preTrustCommand?: (cwd: string) => string;
-  /** Whether to install this agent's notification hook scripts for the bell. */
-  installsHooks?: boolean;
+  /** Which notification-hook style this agent uses for the bell:
+   *  'claude' (.claude/settings.local.json hooks) or 'copilot' (user-level
+   *  ~/.copilot/hooks). Undefined → no hooks (BEL only). */
+  hookStyle?: "claude" | "copilot";
   /** Read the current human-facing title for a captured/minted session id.
    *  Returns null when none is set. Implementations MUST be mobile-safe
    *  (lazy-require fs and swallow errors). */

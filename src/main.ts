@@ -369,6 +369,11 @@ export default class VaultTerminalPlugin extends Plugin {
     this.stopRemoteSession();
     // Stop IDE integration server
     this.stopIdeServer();
+    // Remove any user-level Copilot notification hooks we installed
+    try {
+      const { ShellManager } = require("./shell-manager");
+      ShellManager.uninstallCopilotHooks();
+    } catch (_e) { /* mobile / not installed */ }
     // Kill all terminal processes before unloading to prevent orphans
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
     for (const leaf of leaves) {

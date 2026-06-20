@@ -93,6 +93,50 @@ process.stdin.on("end", () => {
 function out() { process.stdout.write(JSON.stringify({ continue: true })); }
 `;
 
+// Copilot uses its own hook system. This single script handles both the
+// `notification` and `agentStop` events (the event is passed via the
+// COPILOT_HOOK_EVENT env set in the hook config) and POSTs to the IDE server's
+// Unix-socket /notify endpoint. It no-ops unless the session was spawned by the
+// plugin (COPILOT_OBSIDIAN_TAB_ID is set) so unrelated copilot runs stay quiet.
+const COPILOT_NOTIFY_HOOK_SCRIPT = `#!/usr/bin/env node
+const fs = require("fs");
+const path = require("path");
+const os = require("os");
+const http = require("http");
+
+let input = "";
+process.stdin.on("data", (c) => (input += c));
+process.stdin.on("end", () => {
+  const tabId = process.env.COPILOT_OBSIDIAN_TAB_ID;
+  if (!tabId) return;
+  let data = {};
+  try { data = JSON.parse(input); } catch (_e) {}
+  const type = process.env.COPILOT_HOOK_EVENT || "notification";
+  const lockDir = path.join(os.homedir(), ".copilot", "ide");
+  let files = [];
+  try { files = fs.readdirSync(lockDir).filter((f) => f.endsWith(".lock")); } catch (_e) { return; }
+  for (const f of files) {
+    try {
+      const lock = JSON.parse(fs.readFileSync(path.join(lockDir, f), "utf8"));
+      if (lock.ideName !== "Obsidian" || !lock.socketPath) continue;
+      const body = JSON.stringify({
+        type: type,
+        notification_type: data.notification_type || null,
+        message: data.message || null,
+        tab_id: tabId,
+      });
+      const headers = Object.assign(
+        { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+        lock.headers || {},
+      );
+      const req = http.request({ socketPath: lock.socketPath, path: "/notify", method: "POST", headers, timeout: 1000 });
+      req.on("error", () => {});
+      req.end(body);
+    } catch (_e) {}
+  }
+});
+`;
+
 export class ShellManager implements IShellManager {
   proc: ChildProcess | null = null;
   private stdoutDecoder = new StringDecoder("utf8");
@@ -131,12 +175,14 @@ export class ShellManager implements IShellManager {
 
     const backend = this.getBackend();
 
-    // Install the agent's notification hooks (for the bell), if it uses them.
-    if (backend.installsHooks) {
+    // Install the agent's notification hooks (for the bell), per hook style.
+    if (backend.hookStyle === "claude") {
       const hookSettingsPath = ShellManager.installHooks(cwd);
       if (hookSettingsPath) {
         this.hookSettingsPath = hookSettingsPath;
       }
+    } else if (backend.hookStyle === "copilot") {
+      ShellManager.installCopilotHooks();
     }
 
     const isWindows = process.platform === "win32";
@@ -259,9 +305,13 @@ export class ShellManager implements IShellManager {
       shellEnv.ENABLE_IDE_INTEGRATION = "true";
     }
     if (tabId) {
-      // Picked up by NOTIFY_HOOK_SCRIPT / STOP_HOOK_SCRIPT so /notify POSTs
-      // include this tab's id, letting the plugin target the bell precisely.
-      shellEnv.CLAUDE_OBSIDIAN_TAB_ID = tabId;
+      // Picked up by the notify hook scripts so /notify POSTs include this
+      // tab's id, letting the plugin target the bell precisely.
+      if (backend.hookStyle === "copilot") {
+        shellEnv.COPILOT_OBSIDIAN_TAB_ID = tabId;
+      } else {
+        shellEnv.CLAUDE_OBSIDIAN_TAB_ID = tabId;
+      }
     }
 
     this.proc = spawn(cmd, args, {
@@ -404,6 +454,49 @@ export class ShellManager implements IShellManager {
       } else {
         fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
       }
+    } catch (_e) {}
+  }
+
+  /** Install user-level Copilot notification hooks (~/.copilot/hooks) that POST
+   *  to the IDE server's Unix-socket /notify endpoint for the bell. Idempotent. */
+  static installCopilotHooks(): void {
+    try {
+      const home = os.homedir();
+      const scriptDir = path.join(home, ".copilot", "obsidian-sidebar");
+      fs.mkdirSync(scriptDir, { recursive: true });
+      const scriptPath = path.join(scriptDir, "notify.cjs");
+      fs.writeFileSync(scriptPath, COPILOT_NOTIFY_HOOK_SCRIPT, { mode: 0o755 });
+
+      const hooksDir = path.join(home, ".copilot", "hooks");
+      fs.mkdirSync(hooksDir, { recursive: true });
+      const command = `node "${scriptPath}"`;
+      const config = {
+        version: 1,
+        hooks: {
+          notification: [
+            { type: "command", command, env: { COPILOT_HOOK_EVENT: "notification" }, timeoutSec: 5 },
+          ],
+          agentStop: [
+            { type: "command", command, env: { COPILOT_HOOK_EVENT: "stop" }, timeoutSec: 5 },
+          ],
+        },
+      };
+      fs.writeFileSync(
+        path.join(hooksDir, "obsidian-sidebar.json"),
+        JSON.stringify(config, null, 2),
+      );
+    } catch (_e) {
+      // best effort
+    }
+  }
+
+  /** Remove the user-level Copilot hooks installed by installCopilotHooks(). */
+  static uninstallCopilotHooks(): void {
+    try {
+      const home = os.homedir();
+      try { fs.unlinkSync(path.join(home, ".copilot", "hooks", "obsidian-sidebar.json")); } catch (_e) {}
+      try { fs.unlinkSync(path.join(home, ".copilot", "obsidian-sidebar", "notify.cjs")); } catch (_e) {}
+      try { fs.rmdirSync(path.join(home, ".copilot", "obsidian-sidebar")); } catch (_e) {}
     } catch (_e) {}
   }
 }

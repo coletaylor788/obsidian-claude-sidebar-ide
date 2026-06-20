@@ -39,7 +39,7 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     sessionMode: "capture",
     preTrustCommand: (cwd) =>
       `claude config set -g trustedDirectories '${cwd}' 2>/dev/null; `,
-    installsHooks: true,
+    hookStyle: "claude",
     readSessionTitle: readClaudeTitle,
   },
   copilot: {
@@ -57,7 +57,7 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     ideFlag: null,
     ideKind: "copilot",
     sessionMode: "mint",
-    installsHooks: false,
+    hookStyle: "copilot",
     readSessionTitle: readCopilotTitle,
   },
   codex: {

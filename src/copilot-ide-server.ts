@@ -117,13 +117,18 @@ export class CopilotIdeServer implements IIdeServer {
 
   private handleHttp(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = req.url || "";
-    if (url.indexOf("/mcp") !== 0) {
-      res.writeHead(404);
+    if (this.authToken && req.headers[AUTH_HEADER] !== this.authToken) {
+      res.writeHead(401);
       res.end();
       return;
     }
-    if (this.authToken && req.headers[AUTH_HEADER] !== this.authToken) {
-      res.writeHead(401);
+    // Bell: the notify hook scripts POST here over the Unix socket.
+    if (req.method === "POST" && url.indexOf("/notify") === 0) {
+      this.handleNotify(req, res);
+      return;
+    }
+    if (url.indexOf("/mcp") !== 0) {
+      res.writeHead(404);
       res.end();
       return;
     }
@@ -142,6 +147,27 @@ export class CopilotIdeServer implements IIdeServer {
     }
     res.writeHead(405);
     res.end();
+  }
+
+  private handleNotify(req: http.IncomingMessage, res: http.ServerResponse): void {
+    let body = "";
+    req.on("data", (chunk: Buffer) => { body += chunk.toString(); });
+    req.on("end", () => {
+      try {
+        const data = JSON.parse(body);
+        this.notifyCallback?.(
+          typeof data.type === "string" ? data.type : "notification",
+          data.notification_type ?? null,
+          data.message ?? null,
+          typeof data.tab_id === "string" ? data.tab_id : null,
+        );
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (_e) {
+        res.writeHead(400);
+        res.end();
+      }
+    });
   }
 
   /** Long-lived SSE stream: Copilot opens GET /mcp to receive server→client
