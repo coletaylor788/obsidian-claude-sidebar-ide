@@ -35,6 +35,7 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     resumeByIdFlag: "--resume",
     supportsIde: true,
     ideFlag: "--ide",
+    ideKind: "claude",
     sessionMode: "capture",
     preTrustCommand: (cwd) =>
       `claude config set -g trustedDirectories '${cwd}' 2>/dev/null; `,
@@ -50,10 +51,11 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     resumeIsSubcommand: false,
     resumeByIdFlag: "--resume",
     sessionIdFlag: "--session-id",
-    // IDE integration lands in a later phase (Copilot uses a different
-    // transport than Claude); keep it off until then.
-    supportsIde: false,
+    // Copilot auto-connects to a lock file in ~/.copilot/ide/ over a Unix
+    // socket (Streamable-HTTP MCP) — no spawn flag or SSE-port env needed.
+    supportsIde: true,
     ideFlag: null,
+    ideKind: "copilot",
     sessionMode: "mint",
     installsHooks: false,
     readSessionTitle: readCopilotTitle,

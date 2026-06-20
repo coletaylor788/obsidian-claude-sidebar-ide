@@ -98,6 +98,8 @@ export class ClaudeSidebarSettingsTab extends PluginSettingTab {
         drop.onChange(async (value) => {
           this.plugin.pluginData.cliBackend = value;
           await this.plugin.saveData(this.plugin.pluginData);
+          // Restart the IDE bridge so it matches the newly-selected agent.
+          this.plugin.updateRuntimeMode();
         });
       });
 

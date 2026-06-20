@@ -37,6 +37,9 @@ export interface Backend {
   /** Whether this agent supports the live IDE integration (selection/diff via
    *  the local MCP server + lock file). */
   supportsIde?: boolean;
+  /** Which IDE transport this agent speaks: 'claude' (TCP WebSocket) or
+   *  'copilot' (Unix socket + Streamable-HTTP MCP). Selects the server impl. */
+  ideKind?: "claude" | "copilot";
   /** Flag appended to the spawn command to enable IDE integration when a
    *  server is running (e.g. claude `--ide`; null when the agent auto-connects
    *  via a lock file and needs no flag). */
@@ -98,4 +101,22 @@ export interface McpTool {
 
 export interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
+}
+
+/** Common surface for the per-backend IDE bridges (Claude WS / Copilot HTTP-MCP)
+ *  so the plugin can hold either behind one field. */
+export interface IIdeServer {
+  /** TCP port (Claude) or null (Copilot uses a Unix socket). */
+  port: number | null;
+  notifyCallback:
+    | ((
+        type: string,
+        notificationType: string | null,
+        message: string | null,
+        tabId: string | null,
+      ) => void)
+    | null;
+  start(): void;
+  stop(): void;
+  pushSelection(): void;
 }

@@ -5,7 +5,7 @@ import { CLI_BACKENDS } from "./backends";
 import { SpriteManager } from "./sprite-manager";
 import { SpritesSetupModal } from "./setup-modal";
 import type { IShellManager } from "./shell-interface";
-import type { PluginData, Backend } from "./types";
+import type { PluginData, Backend, IIdeServer } from "./types";
 import {
   debounce,
   generateSessionId,
@@ -16,13 +16,12 @@ import { persistentSelectionExtension } from "./persistent-selection";
 
 // Type-only imports for modules that depend on Node.js built-ins.
 // Actual modules are lazy-loaded via require() to avoid crashing on mobile.
-import type { IdeServer } from "./ide-server";
 import type { VaultSync } from "./vault-sync";
 import type { RemoteIdeClient } from "./remote-ide-client";
 
 export default class VaultTerminalPlugin extends Plugin {
   pluginData: PluginData = {};
-  ideServer: IdeServer | null = null;
+  ideServer: IIdeServer | null = null;
   spriteManager: SpriteManager | null = null;
   vaultSync: VaultSync | null = null;
   remoteIdeClient: RemoteIdeClient | null = null;
@@ -386,20 +385,33 @@ export default class VaultTerminalPlugin extends Plugin {
   }
 
   startIdeServer(): void {
-    const { IdeServer: IdeServerImpl } = require("./ide-server");
-    this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
+    // Only agents with IDE support get a bridge, and each speaks its own
+    // transport (Claude: TCP WebSocket; Copilot: Unix socket + HTTP-MCP).
+    const backend = CLI_BACKENDS[this.pluginData.cliBackend || "claude"];
+    if (!backend?.supportsIde) {
+      this.ideServer = null;
+      return;
+    }
+    if (backend.ideKind === "copilot") {
+      const { CopilotIdeServer } = require("./copilot-ide-server");
+      this.ideServer = new CopilotIdeServer(this.app, () => this.getVaultPath());
+    } else {
+      const { IdeServer: IdeServerImpl } = require("./ide-server");
+      this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
+    }
+    const agentLabel = backend.label;
     this.ideServer!.notifyCallback = (type: string, notificationType: string | null, _message: string | null, tabId: string | null) => {
       if (type === "stop") {
-        new Notice("Claude finished", 4000);
+        new Notice(`${agentLabel} finished`, 4000);
       } else if (type === "notification") {
         if (notificationType === "permission_prompt") {
-          new Notice("Claude needs permission", 8000);
+          new Notice(`${agentLabel} needs permission`, 8000);
         } else if (notificationType === "elicitation_dialog") {
-          new Notice("Claude is asking a question", 8000);
+          new Notice(`${agentLabel} is asking a question`, 8000);
         }
       }
-      // Find the source tab via tab_id (set in /notify body by our hook
-      // scripts from the CLAUDE_OBSIDIAN_TAB_ID env var). Fall back to the
+      // Find the source tab via tab_id (set in the /notify body by our hook
+      // scripts from the *_OBSIDIAN_TAB_ID env var). Fall back to the
       // most-recently-focused tab if the id isn't present (older spawns).
       const targetLeaf = tabId
         ? this.app.workspace.getLeavesOfType(VIEW_TYPE).find(
