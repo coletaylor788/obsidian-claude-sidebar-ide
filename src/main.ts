@@ -83,7 +83,7 @@ export default class VaultTerminalPlugin extends Plugin {
           const view = leaf.view;
           const id = view.sessionId;
           // Pick up any /rename done inside claude since the last focus.
-          view.refreshClaudeSessionTitle();
+          view.refreshSessionTitle();
           // User is looking at this tab now — clear any pending bell.
           view.setNeedsAttention(false);
           if (id && id !== this.activeSessionId) {
@@ -731,7 +731,7 @@ export default class VaultTerminalPlugin extends Plugin {
       }
 
       this.pruneStaleGroups();
-      this.dedupeClaudeSessionIds();
+      this.dedupeAgentSessionIds();
     } catch (err) {
       console.warn("[claude-sidebar-ide] initSessionGroups failed:", err);
     } finally {
@@ -917,12 +917,12 @@ export default class VaultTerminalPlugin extends Plugin {
    *  given one. Used by the per-tab capture poll to avoid accidentally
    *  grabbing a claude conversation that another tab already owns (race when
    *  multiple tabs spawn in the same cwd). */
-  claudeSessionIdsInUseByOtherTabs(exceptLeaf: WorkspaceLeaf): Set<string> {
+  agentSessionIdsInUseByOtherTabs(exceptLeaf: WorkspaceLeaf): Set<string> {
     const out = new Set<string>();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (leaf === exceptLeaf) continue;
-      if (leaf.view instanceof TerminalView && leaf.view.claudeSessionId) {
-        out.add(leaf.view.claudeSessionId);
+      if (leaf.view instanceof TerminalView && leaf.view.agentSessionId) {
+        out.add(leaf.view.agentSessionId);
       }
     }
     return out;
@@ -932,14 +932,14 @@ export default class VaultTerminalPlugin extends Plugin {
    *  first. Cleared tabs will recapture a fresh id on next user activity.
    *  Called during init so a previous capture race or /rename fallout
    *  self-corrects on the next reload. */
-  private dedupeClaudeSessionIds(): void {
+  private dedupeAgentSessionIds(): void {
     const seen = new Set<string>();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (!(leaf.view instanceof TerminalView)) continue;
-      const id = leaf.view.claudeSessionId;
+      const id = leaf.view.agentSessionId;
       if (!id) continue;
       if (seen.has(id)) {
-        leaf.view.claudeSessionId = null;
+        leaf.view.agentSessionId = null;
       } else {
         seen.add(id);
       }

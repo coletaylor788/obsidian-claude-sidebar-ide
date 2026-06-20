@@ -115,7 +115,7 @@ export class ShellManager implements IShellManager {
       workingDir = null,
       yoloMode = false,
       continueSession = false,
-      claudeSessionId = null,
+      agentSessionId = null,
       tabId = null,
       cols = 80,
       rows = 24,
@@ -129,10 +129,14 @@ export class ShellManager implements IShellManager {
     // Persist last working directory for resume
     this.pluginData.lastCwd = cwd;
 
-    // Install Claude Code notification hooks
-    const hookSettingsPath = ShellManager.installHooks(cwd);
-    if (hookSettingsPath) {
-      this.hookSettingsPath = hookSettingsPath;
+    const backend = this.getBackend();
+
+    // Install the agent's notification hooks (for the bell), if it uses them.
+    if (backend.installsHooks) {
+      const hookSettingsPath = ShellManager.installHooks(cwd);
+      if (hookSettingsPath) {
+        this.hookSettingsPath = hookSettingsPath;
+      }
     }
 
     const isWindows = process.platform === "win32";
@@ -198,10 +202,9 @@ export class ShellManager implements IShellManager {
       }
     }
 
-    const backend = this.getBackend();
     const idePort = this.getIdeServerPort();
     let cliCmd = backend.binary;
-    if (backend.binary === "claude" && idePort) cliCmd += " --ide";
+    if (backend.supportsIde && backend.ideFlag && idePort) cliCmd += " " + backend.ideFlag;
     if (yoloMode && backend.yoloFlag) cliCmd += " " + backend.yoloFlag;
     const additionalFlags = ShellManager.sanitizeFlags(this.pluginData.additionalFlags);
     if (additionalFlags) cliCmd += " " + additionalFlags;
@@ -210,9 +213,9 @@ export class ShellManager implements IShellManager {
       // Prefer resume-by-id when we have a specific conversation captured for
       // this tab — keeps each tab's claude conversation distinct across reload.
       // Fall back to the generic resumeFlag (e.g. --continue) otherwise.
-      if (claudeSessionId && backend.resumeByIdFlag) {
+      if (agentSessionId && backend.resumeByIdFlag) {
         // Shell-quote the id defensively even though UUIDs are safe.
-        cliCmd += ` ${backend.resumeByIdFlag} '${claudeSessionId.replace(/'/g, "'\\''")}'`;
+        cliCmd += ` ${backend.resumeByIdFlag} '${agentSessionId.replace(/'/g, "'\\''")}'`;
       } else if (backend.resumeFlag) {
         if (backend.resumeIsSubcommand) {
           // e.g. "codex resume --last" — replace the whole command
@@ -223,8 +226,8 @@ export class ShellManager implements IShellManager {
         }
       }
     }
-    // Pre-trust the working directory so Claude doesn't prompt on first run
-    const trustCmd = backend.binary === "claude" ? `claude config set -g trustedDirectories '${cwd}' 2>/dev/null; ` : "";
+    // Pre-trust the working directory so the agent doesn't prompt on first run
+    const trustCmd = backend.preTrustCommand ? backend.preTrustCommand(cwd) : "";
     const shellCmd = continueSession
       ? `${trustCmd}${cliCmd} || ${baseCmd} || true; exec $SHELL -i`
       : `${trustCmd}${cliCmd} || true; exec $SHELL -i`;
@@ -246,8 +249,8 @@ export class ShellManager implements IShellManager {
       }
     }
 
-    // IDE integration: set env vars so Claude Code connects to our WebSocket server
-    if (backend.binary === "claude" && idePort) {
+    // IDE integration: set env vars so the agent connects to our WebSocket server
+    if (backend.supportsIde && idePort) {
       shellEnv.CLAUDE_CODE_SSE_PORT = String(idePort);
       shellEnv.ENABLE_IDE_INTEGRATION = "true";
     }
