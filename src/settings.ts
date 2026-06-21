@@ -29,7 +29,7 @@ export class ClaudeSidebarSettingsTab extends PluginSettingTab {
     // Runtime Mode dropdown
     new Setting(containerEl)
       .setName("Runtime mode")
-      .setDesc("Local runs Claude Code on this device. Sprites.dev runs it in a cloud VM (required for mobile).")
+      .setDesc("Local runs the agent on this device. Sprites.dev runs it in a cloud VM (required for mobile).")
       .addDropdown(drop => {
         drop.addOption('local', 'Local');
         drop.addOption('sprites', 'Sprites.dev');
@@ -98,6 +98,8 @@ export class ClaudeSidebarSettingsTab extends PluginSettingTab {
         drop.onChange(async (value) => {
           this.plugin.pluginData.cliBackend = value;
           await this.plugin.saveData(this.plugin.pluginData);
+          // Restart the IDE bridge so it matches the newly-selected agent.
+          this.plugin.updateRuntimeMode();
         });
       });
 
@@ -114,7 +116,7 @@ export class ClaudeSidebarSettingsTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auto-resume sessions")
-      .setDesc("Automatically resume the previous Claude session when Obsidian restarts.")
+      .setDesc("Automatically resume the previous agent session when Obsidian restarts.")
       .addToggle(toggle => toggle
         .setValue(this.plugin.pluginData.autoResume !== false)
         .onChange(async (value) => {

@@ -5,7 +5,7 @@ import { CLI_BACKENDS } from "./backends";
 import { SpriteManager } from "./sprite-manager";
 import { SpritesSetupModal } from "./setup-modal";
 import type { IShellManager } from "./shell-interface";
-import type { PluginData, Backend } from "./types";
+import type { PluginData, Backend, IIdeServer } from "./types";
 import {
   debounce,
   generateSessionId,
@@ -16,13 +16,12 @@ import { persistentSelectionExtension } from "./persistent-selection";
 
 // Type-only imports for modules that depend on Node.js built-ins.
 // Actual modules are lazy-loaded via require() to avoid crashing on mobile.
-import type { IdeServer } from "./ide-server";
 import type { VaultSync } from "./vault-sync";
 import type { RemoteIdeClient } from "./remote-ide-client";
 
 export default class VaultTerminalPlugin extends Plugin {
   pluginData: PluginData = {};
-  ideServer: IdeServer | null = null;
+  ideServer: IIdeServer | null = null;
   spriteManager: SpriteManager | null = null;
   vaultSync: VaultSync | null = null;
   remoteIdeClient: RemoteIdeClient | null = null;
@@ -83,7 +82,7 @@ export default class VaultTerminalPlugin extends Plugin {
           const view = leaf.view;
           const id = view.sessionId;
           // Pick up any /rename done inside claude since the last focus.
-          view.refreshClaudeSessionTitle();
+          view.refreshSessionTitle();
           // User is looking at this tab now — clear any pending bell.
           view.setNeedsAttention(false);
           if (id && id !== this.activeSessionId) {
@@ -107,7 +106,7 @@ export default class VaultTerminalPlugin extends Plugin {
       })
     );
 
-    const ribbonIcon = this.addRibbonIcon("bot", "New Claude Tab", () => {
+    const ribbonIcon = this.addRibbonIcon("bot", "New agent tab", () => {
       const now = Date.now();
       if (now - this.lastRibbonClick < 1500) return; // 1.5s throttle to prevent accidental double-clicks
       this.lastRibbonClick = now;
@@ -166,13 +165,13 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "open-claude",
-      name: "Open Claude Code",
+      name: "Open agent session",
       callback: () => this.activateView(),
     });
 
     this.addCommand({
       id: "new-claude-tab",
-      name: "New Claude Tab",
+      name: "New agent tab",
       callback: () => this.createNewTab(),
     });
 
@@ -189,7 +188,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "close-claude-tab",
-      name: "Close Claude Tab",
+      name: "Close agent tab",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(TerminalView);
         if (view) {
@@ -202,13 +201,13 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "toggle-claude-focus",
-      name: "Toggle Focus: Editor \u2194 Claude",
+      name: "Toggle focus: editor \u2194 agent",
       callback: () => this.toggleFocus(),
     });
 
     this.addCommand({
       id: "next-claude-session",
-      name: "Next Claude Session",
+      name: "Next agent session",
       checkCallback: (checking) => {
         const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
         if (count < 2) return false;
@@ -219,7 +218,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "previous-claude-session",
-      name: "Previous Claude Session",
+      name: "Previous agent session",
       checkCallback: (checking) => {
         const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
         if (count < 2) return false;
@@ -230,7 +229,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "send-file-to-claude",
-      name: "Send File Path to Claude",
+      name: "Send file path to agent",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (!file) return false;
@@ -244,7 +243,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "send-selection-to-claude",
-      name: "Send Selection to Claude",
+      name: "Send selection to agent",
       checkCallback: (checking) => {
         const editor = this.app.workspace.activeEditor?.editor;
         if (!editor) return false;
@@ -259,7 +258,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "run-claude-from-folder",
-      name: "Run Claude from this folder",
+      name: "Run agent from this folder",
       callback: () => {
         const file = this.app.workspace.getActiveFile();
         let dir: string | null = null;
@@ -294,7 +293,7 @@ export default class VaultTerminalPlugin extends Plugin {
           if (file instanceof TFolder) {
             menu.addItem((item) =>
               item
-                .setTitle("Open Claude here")
+                .setTitle("Open agent here")
                 .setIcon("bot")
                 .onClick(() => {
                   const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
@@ -305,7 +304,7 @@ export default class VaultTerminalPlugin extends Plugin {
             if (folderBackend.yoloFlag) {
               menu.addItem((item) =>
                 item
-                  .setTitle("Open Claude here (YOLO)")
+                  .setTitle("Open agent here (YOLO)")
                   .setIcon("zap")
                   .onClick(() => {
                     const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
@@ -325,7 +324,7 @@ export default class VaultTerminalPlugin extends Plugin {
         if (selection) {
           menu.addItem((item) =>
             item
-              .setTitle("Send selection to Claude")
+              .setTitle("Send selection to agent")
               .setIcon("bot")
               .onClick(() => {
                 this.sendTextToTerminal(selection);
@@ -370,6 +369,11 @@ export default class VaultTerminalPlugin extends Plugin {
     this.stopRemoteSession();
     // Stop IDE integration server
     this.stopIdeServer();
+    // Remove any user-level Copilot notification hooks we installed
+    try {
+      const { ShellManager } = require("./shell-manager");
+      ShellManager.uninstallCopilotHooks();
+    } catch (_e) { /* mobile / not installed */ }
     // Kill all terminal processes before unloading to prevent orphans
     const leaves = this.app.workspace.getLeavesOfType(VIEW_TYPE);
     for (const leaf of leaves) {
@@ -386,20 +390,33 @@ export default class VaultTerminalPlugin extends Plugin {
   }
 
   startIdeServer(): void {
-    const { IdeServer: IdeServerImpl } = require("./ide-server");
-    this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
+    // Only agents with IDE support get a bridge, and each speaks its own
+    // transport (Claude: TCP WebSocket; Copilot: Unix socket + HTTP-MCP).
+    const backend = CLI_BACKENDS[this.pluginData.cliBackend || "claude"];
+    if (!backend?.supportsIde) {
+      this.ideServer = null;
+      return;
+    }
+    if (backend.ideKind === "copilot") {
+      const { CopilotIdeServer } = require("./copilot-ide-server");
+      this.ideServer = new CopilotIdeServer(this.app, () => this.getVaultPath());
+    } else {
+      const { IdeServer: IdeServerImpl } = require("./ide-server");
+      this.ideServer = new IdeServerImpl(this.app, () => this.getVaultPath());
+    }
+    const agentLabel = backend.label;
     this.ideServer!.notifyCallback = (type: string, notificationType: string | null, _message: string | null, tabId: string | null) => {
       if (type === "stop") {
-        new Notice("Claude finished", 4000);
+        new Notice(`${agentLabel} finished`, 4000);
       } else if (type === "notification") {
         if (notificationType === "permission_prompt") {
-          new Notice("Claude needs permission", 8000);
+          new Notice(`${agentLabel} needs permission`, 8000);
         } else if (notificationType === "elicitation_dialog") {
-          new Notice("Claude is asking a question", 8000);
+          new Notice(`${agentLabel} is asking a question`, 8000);
         }
       }
-      // Find the source tab via tab_id (set in /notify body by our hook
-      // scripts from the CLAUDE_OBSIDIAN_TAB_ID env var). Fall back to the
+      // Find the source tab via tab_id (set in the /notify body by our hook
+      // scripts from the *_OBSIDIAN_TAB_ID env var). Fall back to the
       // most-recently-focused tab if the id isn't present (older spawns).
       const targetLeaf = tabId
         ? this.app.workspace.getLeavesOfType(VIEW_TYPE).find(
@@ -731,7 +748,7 @@ export default class VaultTerminalPlugin extends Plugin {
       }
 
       this.pruneStaleGroups();
-      this.dedupeClaudeSessionIds();
+      this.dedupeAgentSessionIds();
     } catch (err) {
       console.warn("[claude-sidebar-ide] initSessionGroups failed:", err);
     } finally {
@@ -917,12 +934,12 @@ export default class VaultTerminalPlugin extends Plugin {
    *  given one. Used by the per-tab capture poll to avoid accidentally
    *  grabbing a claude conversation that another tab already owns (race when
    *  multiple tabs spawn in the same cwd). */
-  claudeSessionIdsInUseByOtherTabs(exceptLeaf: WorkspaceLeaf): Set<string> {
+  agentSessionIdsInUseByOtherTabs(exceptLeaf: WorkspaceLeaf): Set<string> {
     const out = new Set<string>();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (leaf === exceptLeaf) continue;
-      if (leaf.view instanceof TerminalView && leaf.view.claudeSessionId) {
-        out.add(leaf.view.claudeSessionId);
+      if (leaf.view instanceof TerminalView && leaf.view.agentSessionId) {
+        out.add(leaf.view.agentSessionId);
       }
     }
     return out;
@@ -932,14 +949,14 @@ export default class VaultTerminalPlugin extends Plugin {
    *  first. Cleared tabs will recapture a fresh id on next user activity.
    *  Called during init so a previous capture race or /rename fallout
    *  self-corrects on the next reload. */
-  private dedupeClaudeSessionIds(): void {
+  private dedupeAgentSessionIds(): void {
     const seen = new Set<string>();
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       if (!(leaf.view instanceof TerminalView)) continue;
-      const id = leaf.view.claudeSessionId;
+      const id = leaf.view.agentSessionId;
       if (!id) continue;
       if (seen.has(id)) {
-        leaf.view.claudeSessionId = null;
+        leaf.view.agentSessionId = null;
       } else {
         seen.add(id);
       }

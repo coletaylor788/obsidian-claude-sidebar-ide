@@ -30,6 +30,36 @@ export interface Backend {
    *  after this flag instead of using resumeFlag, so each tab persists its
    *  own conversation rather than collapsing onto the cwd's most-recent one. */
   resumeByIdFlag?: string | null;
+  /** Flag that SETS/uses a caller-provided session UUID (e.g. copilot
+   *  `--session-id`). For 'mint' backends the plugin always passes this with
+   *  the minted id — it creates the session on first run and resumes it after. */
+  sessionIdFlag?: string | null;
+  /** Whether this agent supports the live IDE integration (selection/diff via
+   *  the local MCP server + lock file). */
+  supportsIde?: boolean;
+  /** Which IDE transport this agent speaks: 'claude' (TCP WebSocket) or
+   *  'copilot' (Unix socket + Streamable-HTTP MCP). Selects the server impl. */
+  ideKind?: "claude" | "copilot";
+  /** Flag appended to the spawn command to enable IDE integration when a
+   *  server is running (e.g. claude `--ide`; null when the agent auto-connects
+   *  via a lock file and needs no flag). */
+  ideFlag?: string | null;
+  /** Per-tab conversation persistence strategy:
+   *  - 'capture': the agent assigns the id; capture it from disk after spawn (Claude).
+   *  - 'mint': the plugin mints a UUID and passes it on spawn (Copilot).
+   *  - 'none': no per-tab resume. */
+  sessionMode?: "capture" | "mint" | "none";
+  /** Optional shell prefix that pre-trusts the working directory so the agent
+   *  doesn't prompt on first run (e.g. claude trustedDirectories). */
+  preTrustCommand?: (cwd: string) => string;
+  /** Which notification-hook style this agent uses for the bell:
+   *  'claude' (.claude/settings.local.json hooks) or 'copilot' (user-level
+   *  ~/.copilot/hooks). Undefined → no hooks (BEL only). */
+  hookStyle?: "claude" | "copilot";
+  /** Read the current human-facing title for a captured/minted session id.
+   *  Returns null when none is set. Implementations MUST be mobile-safe
+   *  (lazy-require fs and swallow errors). */
+  readSessionTitle?: (agentSessionId: string, cwd: string) => string | null;
 }
 
 export interface WsClient {
@@ -73,4 +103,22 @@ export interface McpTool {
 
 export interface McpToolResult {
   content: Array<{ type: "text"; text: string }>;
+}
+
+/** Common surface for the per-backend IDE bridges (Claude WS / Copilot HTTP-MCP)
+ *  so the plugin can hold either behind one field. */
+export interface IIdeServer {
+  /** TCP port (Claude) or null (Copilot uses a Unix socket). */
+  port: number | null;
+  notifyCallback:
+    | ((
+        type: string,
+        notificationType: string | null,
+        message: string | null,
+        tabId: string | null,
+      ) => void)
+    | null;
+  start(): void;
+  stop(): void;
+  pushSelection(): void;
 }

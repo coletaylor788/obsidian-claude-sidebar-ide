@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import type { IShellManager } from "./shell-interface";
 import { CLI_BACKENDS } from "./backends";
+import { generateSessionId } from "./session-groups";
 import type VaultTerminalPlugin from "./main";
 
 export const VIEW_TYPE = "vault-terminal";
@@ -32,13 +33,13 @@ export class TerminalView extends ItemView {
   /** Claude's per-conversation session id, captured from disk after first
    *  spawn. Persists via getState/setState; on reload we use it to resume
    *  this exact conversation instead of falling back to claude --continue. */
-  claudeSessionId: string | null = null;
+  agentSessionId: string | null = null;
   /** The user-set title from claude /rename, sourced from the conversation
    *  .jsonl. Drives the tab header label. Persisted so it shows immediately
    *  on reload before the .jsonl re-read finishes. */
-  claudeSessionTitle: string | null = null;
+  agentSessionTitle: string | null = null;
   /** Cancel handle for the capture-poll started after shell spawn. */
-  private claudeCaptureTimer: ReturnType<typeof setInterval> | null = null;
+  private sessionCaptureTimer: ReturnType<typeof setInterval> | null = null;
   /** True when the terminal received a BEL (\x07) since the last focus —
    *  Claude's hooks emit BEL on Notification/Stop, so this flags "the agent
    *  is waiting on you." Cleared when the user focuses the tab. */
@@ -70,7 +71,7 @@ export class TerminalView extends ItemView {
   }
 
   getDisplayText(): string {
-    return this.claudeSessionTitle || "Claude";
+    return this.agentSessionTitle || this.getBackend().label;
   }
 
   getIcon(): string {
@@ -91,11 +92,14 @@ export class TerminalView extends ItemView {
     if (typeof state?.sessionId === "string") {
       this.sessionId = state.sessionId;
     }
-    if (typeof state?.claudeSessionId === "string") {
-      this.claudeSessionId = state.claudeSessionId;
+    // Backward-compat: tabs saved before the rename used claudeSessionId/Title.
+    const persistedSessionId = state?.agentSessionId ?? state?.claudeSessionId;
+    if (typeof persistedSessionId === "string") {
+      this.agentSessionId = persistedSessionId;
     }
-    if (typeof state?.claudeSessionTitle === "string") {
-      this.claudeSessionTitle = state.claudeSessionTitle;
+    const persistedTitle = state?.agentSessionTitle ?? state?.claudeSessionTitle;
+    if (typeof persistedTitle === "string") {
+      this.agentSessionTitle = persistedTitle;
     }
     // If shell already started, restart with new settings
     if (this.shell.isRunning && (state?.workingDir || state?.yoloMode || state?.continueSession)) {
@@ -108,8 +112,8 @@ export class TerminalView extends ItemView {
     if (this.workingDir) state.workingDir = this.workingDir;
     if (this.yoloMode) state.yoloMode = this.yoloMode;
     if (this.sessionId) state.sessionId = this.sessionId;
-    if (this.claudeSessionId) state.claudeSessionId = this.claudeSessionId;
-    if (this.claudeSessionTitle) state.claudeSessionTitle = this.claudeSessionTitle;
+    if (this.agentSessionId) state.agentSessionId = this.agentSessionId;
+    if (this.agentSessionTitle) state.agentSessionTitle = this.agentSessionTitle;
     // Auto-resume: persist if shell was running and setting is enabled
     if (this.shell.isRunning && this.plugin.pluginData.autoResume !== false) {
       state.continueSession = true;
@@ -825,12 +829,19 @@ export class TerminalView extends ItemView {
 
     const isWindows = typeof process !== "undefined" && process.platform === "win32";
 
+    // Mint-mode backends (e.g. Copilot) get a stable per-tab session id up front
+    // so the spawn can create — and later resume — this exact conversation by id.
+    if (this.getBackend().sessionMode === "mint" && !this.agentSessionId) {
+      this.agentSessionId = generateSessionId();
+      this.app.workspace.requestSaveLayout();
+    }
+
     this.shell.start(
       {
         workingDir,
         yoloMode,
         continueSession,
-        claudeSessionId: this.claudeSessionId,
+        agentSessionId: this.agentSessionId,
         tabId: this.sessionId,
         cols: this.term?.cols,
         rows: this.term?.rows,
@@ -896,11 +907,11 @@ export class TerminalView extends ItemView {
       }
     });
 
-    // Kick off the per-tab claude session-id capture (Claude backend only,
+    // Kick off the per-tab session-id capture (capture-mode backends only,
     // and only if we don't already have one). Defer until next tick so the
     // shell has actually started.
-    if (this.getBackend().binary === "claude" && !this.claudeSessionId) {
-      setTimeout(() => this.startClaudeSessionCapture(cwd), 100);
+    if (this.getBackend().sessionMode === "capture" && !this.agentSessionId) {
+      setTimeout(() => this.startSessionCapture(cwd), 100);
     }
 
     // Safety: Verify dimensions after shell starts and send resize if needed
@@ -921,7 +932,7 @@ export class TerminalView extends ItemView {
         if (this.shell.isRunning) {
           const backend = this.getBackend();
           let winCmd = backend.binary;
-          if (backend.binary === "claude") winCmd += " --ide";
+          if (backend.supportsIde && backend.ideFlag) winCmd += " " + backend.ideFlag;
           if (yoloMode && backend.yoloFlag) winCmd += " " + backend.yoloFlag;
           this.shell.write(winCmd + "\r");
         }
@@ -935,8 +946,8 @@ export class TerminalView extends ItemView {
    * stores its filename (claude session id) on the view, and Obsidian's next
    * workspace save persists it via getState().
    */
-  private startClaudeSessionCapture(cwd: string): void {
-    this.stopClaudeSessionCapture();
+  private startSessionCapture(cwd: string): void {
+    this.stopSessionCapture();
     let beforeSnapshot: ReturnType<typeof import("./claude-session-capture").listClaudeSessions>;
     let projectDir: string;
     try {
@@ -955,7 +966,7 @@ export class TerminalView extends ItemView {
     const TIMEOUT_MS = 10 * 60 * 1000;
     const POLL_MS = 2000;
 
-    this.claudeCaptureTimer = setInterval(() => {
+    this.sessionCaptureTimer = setInterval(() => {
       try {
         const cap = require("./claude-session-capture");
         const current = cap.listClaudeSessions(projectDir);
@@ -963,33 +974,33 @@ export class TerminalView extends ItemView {
         // Claude tabs spawn in the same cwd:
         //   1. afterMtimeMs ignores files created before THIS tab's spawn.
         //   2. excludeIds refuses ids any other live tab has already claimed.
-        const excludeIds = this.plugin.claudeSessionIdsInUseByOtherTabs(this.leaf);
+        const excludeIds = this.plugin.agentSessionIdsInUseByOtherTabs(this.leaf);
         const found = cap.findNewClaudeSession(
           beforeSnapshot, current, 1, startedAt, excludeIds,
         );
         if (found) {
-          this.claudeSessionId = found.sessionId;
+          this.agentSessionId = found.sessionId;
           this.app.workspace.requestSaveLayout();
-          this.stopClaudeSessionCapture();
+          this.stopSessionCapture();
           // Title may already be set if the user /rename'd before we caught up;
           // pull it now (and refresh whenever the leaf becomes active later).
-          this.refreshClaudeSessionTitle();
+          this.refreshSessionTitle();
           return;
         }
         if (Date.now() - startedAt > TIMEOUT_MS) {
-          this.stopClaudeSessionCapture();
+          this.stopSessionCapture();
         }
       } catch (err) {
         console.warn("[claude-sidebar-ide] session capture error:", err);
-        this.stopClaudeSessionCapture();
+        this.stopSessionCapture();
       }
     }, POLL_MS);
   }
 
-  private stopClaudeSessionCapture(): void {
-    if (this.claudeCaptureTimer) {
-      clearInterval(this.claudeCaptureTimer);
-      this.claudeCaptureTimer = null;
+  private stopSessionCapture(): void {
+    if (this.sessionCaptureTimer) {
+      clearInterval(this.sessionCaptureTimer);
+      this.sessionCaptureTimer = null;
     }
   }
 
@@ -999,21 +1010,16 @@ export class TerminalView extends ItemView {
    * fs read of one file. Invoked after capture and whenever the leaf becomes
    * active (so /rename done in claude shows up the next time you focus).
    */
-  refreshClaudeSessionTitle(): void {
-    if (!this.claudeSessionId) return;
-    try {
-      const cap = require("./claude-session-capture");
-      const cwd = this.workingDir || this.plugin.pluginData.lastCwd || this.plugin.getVaultPath();
-      const projectDir = cap.projectDirForCwd(cwd);
-      const filePath = `${projectDir}/${this.claudeSessionId}.jsonl`;
-      const newTitle: string | null = cap.readClaudeSessionTitle(filePath);
-      if (newTitle !== this.claudeSessionTitle) {
-        this.claudeSessionTitle = newTitle;
-        this.applyTabHeaderTitle();
-        this.app.workspace.requestSaveLayout();
-      }
-    } catch {
-      // Mobile or fs unavailable — leave title as-is.
+  refreshSessionTitle(): void {
+    if (!this.agentSessionId) return;
+    const backend = this.getBackend();
+    if (!backend.readSessionTitle) return;
+    const cwd = this.workingDir || this.plugin.pluginData.lastCwd || this.plugin.getVaultPath();
+    const newTitle = backend.readSessionTitle(this.agentSessionId, cwd);
+    if (newTitle !== this.agentSessionTitle) {
+      this.agentSessionTitle = newTitle;
+      this.applyTabHeaderTitle();
+      this.app.workspace.requestSaveLayout();
     }
   }
 
@@ -1059,7 +1065,7 @@ export class TerminalView extends ItemView {
 
   stopShell(): void {
     this.shell.stop();
-    this.stopClaudeSessionCapture();
+    this.stopSessionCapture();
   }
 
   dispose(): void {
