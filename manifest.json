@@ -1,9 +1,9 @@
 {
   "id": "claude-sidebar-ide",
-  "name": "Claude Sidebar IDE",
+  "name": "Agent Sidebar IDE",
   "version": "1.8.8",
   "minAppVersion": "1.0.0",
-  "description": "Run Claude Code in your sidebar with full IDE integration and session-bound tab groups.",
+  "description": "Run AI coding agents (Claude Code, GitHub Copilot, Codex, Gemini, OpenCode) in your sidebar with full IDE integration and session-bound tab groups.",
   "author": "Cole Taylor (fork of Matthew Hall's fork of Derek Larson's original)",
   "authorUrl": "https://github.com/coletaylor788/obsidian-claude-sidebar-ide",
   "isDesktopOnly": false

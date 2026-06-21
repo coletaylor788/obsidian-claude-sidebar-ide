@@ -106,7 +106,7 @@ export default class VaultTerminalPlugin extends Plugin {
       })
     );
 
-    const ribbonIcon = this.addRibbonIcon("bot", "New Claude Tab", () => {
+    const ribbonIcon = this.addRibbonIcon("bot", "New agent tab", () => {
       const now = Date.now();
       if (now - this.lastRibbonClick < 1500) return; // 1.5s throttle to prevent accidental double-clicks
       this.lastRibbonClick = now;
@@ -165,13 +165,13 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "open-claude",
-      name: "Open Claude Code",
+      name: "Open agent session",
       callback: () => this.activateView(),
     });
 
     this.addCommand({
       id: "new-claude-tab",
-      name: "New Claude Tab",
+      name: "New agent tab",
       callback: () => this.createNewTab(),
     });
 
@@ -188,7 +188,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "close-claude-tab",
-      name: "Close Claude Tab",
+      name: "Close agent tab",
       checkCallback: (checking) => {
         const view = this.app.workspace.getActiveViewOfType(TerminalView);
         if (view) {
@@ -201,13 +201,13 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "toggle-claude-focus",
-      name: "Toggle Focus: Editor \u2194 Claude",
+      name: "Toggle focus: editor \u2194 agent",
       callback: () => this.toggleFocus(),
     });
 
     this.addCommand({
       id: "next-claude-session",
-      name: "Next Claude Session",
+      name: "Next agent session",
       checkCallback: (checking) => {
         const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
         if (count < 2) return false;
@@ -218,7 +218,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "previous-claude-session",
-      name: "Previous Claude Session",
+      name: "Previous agent session",
       checkCallback: (checking) => {
         const count = this.app.workspace.getLeavesOfType(VIEW_TYPE).length;
         if (count < 2) return false;
@@ -229,7 +229,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "send-file-to-claude",
-      name: "Send File Path to Claude",
+      name: "Send file path to agent",
       checkCallback: (checking) => {
         const file = this.app.workspace.getActiveFile();
         if (!file) return false;
@@ -243,7 +243,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "send-selection-to-claude",
-      name: "Send Selection to Claude",
+      name: "Send selection to agent",
       checkCallback: (checking) => {
         const editor = this.app.workspace.activeEditor?.editor;
         if (!editor) return false;
@@ -258,7 +258,7 @@ export default class VaultTerminalPlugin extends Plugin {
 
     this.addCommand({
       id: "run-claude-from-folder",
-      name: "Run Claude from this folder",
+      name: "Run agent from this folder",
       callback: () => {
         const file = this.app.workspace.getActiveFile();
         let dir: string | null = null;
@@ -293,7 +293,7 @@ export default class VaultTerminalPlugin extends Plugin {
           if (file instanceof TFolder) {
             menu.addItem((item) =>
               item
-                .setTitle("Open Claude here")
+                .setTitle("Open agent here")
                 .setIcon("bot")
                 .onClick(() => {
                   const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
@@ -304,7 +304,7 @@ export default class VaultTerminalPlugin extends Plugin {
             if (folderBackend.yoloFlag) {
               menu.addItem((item) =>
                 item
-                  .setTitle("Open Claude here (YOLO)")
+                  .setTitle("Open agent here (YOLO)")
                   .setIcon("zap")
                   .onClick(() => {
                     const absolutePath = (this.app.vault.adapter as any).getFullPath(file.path);
@@ -324,7 +324,7 @@ export default class VaultTerminalPlugin extends Plugin {
         if (selection) {
           menu.addItem((item) =>
             item
-              .setTitle("Send selection to Claude")
+              .setTitle("Send selection to agent")
               .setIcon("bot")
               .onClick(() => {
                 this.sendTextToTerminal(selection);
