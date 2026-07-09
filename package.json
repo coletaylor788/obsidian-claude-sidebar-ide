@@ -1,7 +1,7 @@
 {
   "name": "obsidian-claude-sidebar-ide",
   "version": "1.8.8",
-  "description": "Run AI coding agents (Claude Code, GitHub Copilot, and more) in your sidebar.",
+  "description": "Run AI coding agents (Claude Code, GitHub Copilot) in your sidebar.",
   "main": "main.js",
   "scripts": {
     "dev": "bun run esbuild.config.ts --watch",

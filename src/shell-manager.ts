@@ -430,11 +430,13 @@ export class ShellManager implements IShellManager {
   /** Remove Obsidian-managed hook entries from .claude/settings.local.json. */
   static uninstallHooks(settingsPath: string): void {
     try {
-      // Best-effort: also remove the persistent script files we installed.
-      const hookDir = path.join(os.homedir(), ".claude", "obsidian-sidebar");
-      try { fs.unlinkSync(path.join(hookDir, "notify.cjs")); } catch (_e) {}
-      try { fs.unlinkSync(path.join(hookDir, "stop.cjs")); } catch (_e) {}
-      try { fs.rmdirSync(hookDir); } catch (_e) {}
+      // NOTE: We intentionally do NOT delete the shared hook scripts in
+      // ~/.claude/obsidian-sidebar/. They live in a single global location but
+      // are referenced by every project's .claude/settings.local.json where the
+      // sidebar has run. Deleting them here (on one session's teardown) leaves
+      // dangling references in all other projects, so Claude's Stop/Notification
+      // hooks crash with MODULE_NOT_FOUND on every message. The scripts are tiny
+      // and are re-written (idempotently) by installHooks, so we leave them.
 
       if (!fs.existsSync(settingsPath)) return;
       const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));

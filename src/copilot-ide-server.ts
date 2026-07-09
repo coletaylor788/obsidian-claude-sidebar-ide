@@ -302,7 +302,12 @@ export class CopilotIdeServer implements IIdeServer {
       selection: {
         start: { line: from.line, character: from.ch },
         end: { line: to.line, character: to.ch },
-        isEmpty: !text,
+        // Always report a non-empty selection so Copilot injects the active
+        // file into the model context. With isEmpty:true it silently tracks
+        // the file but never surfaces it to the model (so "what file am I
+        // looking at?" fails); a zero-width range with isEmpty:false makes
+        // Copilot show the @file chip and include it without inventing text.
+        isEmpty: false,
       },
     };
   }

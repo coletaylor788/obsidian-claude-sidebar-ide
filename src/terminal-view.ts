@@ -395,7 +395,7 @@ export class TerminalView extends ItemView {
     container.addClass("vault-terminal");
     this.termHost = container.createDiv({ cls: "vault-terminal-host" });
     this.loadingEl = container.createDiv({ cls: "vault-terminal-loading" });
-    this.loadingEl.innerHTML = `<div class="vault-terminal-spinner"></div><div>Starting Claude...</div>`;
+    this.loadingEl.innerHTML = `<div class="vault-terminal-spinner"></div><div>Starting ${this.getBackend().label}...</div>`;
   }
 
   hideLoading(): void {
@@ -468,6 +468,11 @@ export class TerminalView extends ItemView {
       fontSize: 13,
       fontFamily: "Menlo, Monaco, 'Cascadia Mono', 'Cascadia Code', Consolas, 'Courier New', 'Microsoft YaHei', 'SimHei', 'PingFang SC', 'Noto Sans CJK SC', 'WenQuanYi Micro Hei', monospace",
       theme: this.getThemeColors(),
+      // Force dim/faint text (e.g. Copilot's @file context line) to stay legible
+      // by auto-adjusting any foreground that falls below this contrast ratio
+      // against the background. Default is 1 (no enforcement), which lets faint
+      // greys collapse into the terminal background.
+      minimumContrastRatio: 4.5,
       scrollback: 10000,
     });
     this.fitAddon = new FitAddon();

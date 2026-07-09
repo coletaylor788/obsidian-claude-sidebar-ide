@@ -60,36 +60,6 @@ export const CLI_BACKENDS: Record<string, Backend> = {
     hookStyle: "copilot",
     readSessionTitle: readCopilotTitle,
   },
-  codex: {
-    label: "Codex",
-    binary: "codex",
-    pathHints: [],
-    yoloFlag: "--yolo",
-    resumeFlag: "resume --last",
-    resumeIsSubcommand: true,
-    supportsIde: false,
-    sessionMode: "none",
-  },
-  opencode: {
-    label: "OpenCode",
-    binary: "opencode",
-    pathHints: ["/opt/homebrew/bin"],
-    yoloFlag: null,
-    resumeFlag: "--continue",
-    resumeIsSubcommand: false,
-    supportsIde: false,
-    sessionMode: "none",
-  },
-  gemini: {
-    label: "Gemini CLI",
-    binary: "gemini",
-    pathHints: [],
-    yoloFlag: "--approval-mode=yolo",
-    resumeFlag: "--resume",
-    resumeIsSubcommand: false,
-    supportsIde: false,
-    sessionMode: "none",
-  },
 };
 
 export type BackendKey = keyof typeof CLI_BACKENDS;
