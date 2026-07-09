@@ -188,6 +188,32 @@ Tests live alongside the helpers they exercise: `src/session-groups.test.ts` (UU
 
 CI runs `bun run check` on every tag push (`v*`); a successful run publishes `main.js`, `manifest.json`, and `styles.css` to a GitHub Release.
 
+### Cutting a release
+
+BRAT installs from the **latest GitHub Release** assets, so a new version must be tagged and released — pushing to `main` alone is not enough.
+
+1. Bump the version in **three** files to the same number (e.g. `1.8.9`):
+   - `manifest.json` → `"version"`
+   - `package.json` → `"version"`
+   - `versions.json` → add a `"1.8.9": "<minAppVersion>"` line (mirror `minAppVersion` from `manifest.json`)
+2. `bun run check` (typecheck → test → build).
+3. Commit, then tag and push:
+   ```bash
+   git commit -am "chore: bump to 1.8.9"
+   git push
+   git tag v1.8.9 && git push origin v1.8.9   # tag must match manifest.json version
+   ```
+4. The `release.yml` workflow builds and publishes the Release automatically.
+
+**If GitHub Actions is disabled (e.g. on a fork), cut the release manually** after `bun run build`:
+
+```bash
+gh release create v1.8.9 \
+  --title "v1.8.9 — <summary>" \
+  --notes "…" \
+  main.js manifest.json styles.css
+```
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
